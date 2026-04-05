@@ -558,6 +558,8 @@ function PurchaseModal({ articles, onSave, onClose }) {
   const [items, setItems] = useState([]);
   const [q, setQ] = useState('');
   const [showDD, setShowDD] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState('');
 
   const avail = articles.filter(a => a.name.toLowerCase().includes(q.toLowerCase()) && !items.find(i => i.articleId === a.id));
 
@@ -572,6 +574,51 @@ function PurchaseModal({ articles, onSave, onClose }) {
     setItems(u);
   };
 
+  const handleScanInvoice = async (file) => {
+    setScanning(true);
+    setScanError('');
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = () => res(reader.result.split(',')[1]);
+        reader.onerror = () => rej(new Error('Error reading file'));
+        reader.readAsDataURL(file);
+      });
+
+      const resp = await fetch('/api/scan-invoice', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64, mimeType: file.type }),
+      });
+
+      if (!resp.ok) throw new Error('Error al procesar la imagen');
+
+      const data = await resp.json();
+
+      if (data.supplier) setSupplier(data.supplier);
+      if (data.invoiceNumber) setInvoiceNum(data.invoiceNumber);
+
+      if (data.items && data.items.length > 0) {
+        const newItems = data.items.map(scanned => {
+          const match = articles.find(a => a.name.toLowerCase().includes(scanned.name.toLowerCase()) || scanned.name.toLowerCase().includes(a.name.toLowerCase()));
+          return {
+            articleId: match?.id || null,
+            articleName: match?.name || scanned.name,
+            unit: scanned.unit || 'und',
+            quantity: scanned.quantity || 1,
+            unitCost: scanned.unitCost || 0,
+            subtotal: (scanned.quantity || 1) * (scanned.unitCost || 0),
+            isNew: !match,
+          };
+        });
+        setItems(prev => [...prev, ...newItems]);
+      }
+    } catch (e) {
+      setScanError(e.message || 'Error al escanear');
+    }
+    setScanning(false);
+  };
+
   const total = items.reduce((s, i) => s + i.subtotal, 0);
 
   return (
@@ -579,12 +626,41 @@ function PurchaseModal({ articles, onSave, onClose }) {
       <div className="md md-lg" onClick={e => e.stopPropagation()}>
         <div className="md-h"><h2>Registrar Factura de Compra</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
         <div className="md-b">
+          {/* AI SCAN AREA */}
+          <div style={{
+            border: '2px dashed var(--br)', borderRadius: 12, padding: 20, textAlign: 'center',
+            marginBottom: 18, cursor: 'pointer', background: scanning ? 'var(--acL)' : 'var(--bg3)',
+            transition: 'all 0.2s',
+          }}
+            onClick={() => !scanning && document.getElementById('invoice-upload').click()}
+            onDragOver={e => { e.preventDefault(); e.stopPropagation(); }}
+            onDrop={e => { e.preventDefault(); e.stopPropagation(); const f = e.dataTransfer.files[0]; if (f) handleScanInvoice(f); }}
+          >
+            <input id="invoice-upload" type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+              onChange={e => { const f = e.target.files[0]; if (f) handleScanInvoice(f); e.target.value = ''; }} />
+            {scanning ? (
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--ac)' }}>Escaneando factura con IA...</div>
+                <div style={{ fontSize: 12, color: 'var(--tx3)', marginTop: 4 }}>Extrayendo proveedor, artículos y precios</div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ color: 'var(--ac)', marginBottom: 6 }}>
+                  <svg width="28" height="28" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--tx)' }}>Escaneá tu factura con IA</div>
+                <div style={{ fontSize: 12, color: 'var(--tx3)', marginTop: 2 }}>Tocá para sacar una foto o arrastrá una imagen. Claude extrae proveedor, artículos y precios automáticamente.</div>
+              </div>
+            )}
+          </div>
+          {scanError && <div style={{ color: 'var(--rd)', fontSize: 12, marginBottom: 10 }}>{scanError}</div>}
+
           <div className="fr">
             <div className="fg"><label className="fl">Proveedor</label><input className="fi" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="Nombre del proveedor" /></div>
             <div className="fg"><label className="fl">Nº Factura</label><input className="fi" value={invoiceNum} onChange={e => setInvoiceNum(e.target.value)} placeholder="FAC-0001" /></div>
           </div>
           <div className="fg" style={{ position: 'relative' }}>
-            <label className="fl">Agregar Artículo</label>
+            <label className="fl">Agregar Artículo (manual)</label>
             <input className="fi" placeholder="Buscar artículo..." value={q} onChange={e => { setQ(e.target.value); setShowDD(true); }} onFocus={() => setShowDD(true)} onBlur={() => setTimeout(() => setShowDD(false), 200)} />
             {showDD && q && (
               <div className="dd">
@@ -606,10 +682,13 @@ function PurchaseModal({ articles, onSave, onClose }) {
                   const art = articles.find(a => a.id === it.articleId);
                   return (
                     <div className="ti-r" key={idx} style={{ gridTemplateColumns: '2fr 70px 90px 100px 100px 36px' }}>
-                      <span style={{ fontWeight: 500 }}>{it.articleName}</span>
+                      <div>
+                        <span style={{ fontWeight: 500 }}>{it.articleName}</span>
+                        {it.isNew && <span style={{ display: 'block', fontSize: 10, color: 'var(--yw)' }}>⚠ No existe en inventario</span>}
+                      </div>
                       <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, 'quantity', parseFloat(e.target.value) || 0)} style={{ padding: '5px 7px', fontSize: 12 }} />
                       <select className="fs" value={it.unit} onChange={e => updItem(idx, 'unit', e.target.value)} style={{ padding: '5px 7px', fontSize: 12 }}>
-                        {(art?.units || ['kg']).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
+                        {(art?.units || UNITS.map(u=>u.value)).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
                       </select>
                       <input className="fi" type="number" step="0.01" min="0" value={it.unitCost} onChange={e => updItem(idx, 'unitCost', parseFloat(e.target.value) || 0)} style={{ padding: '5px 7px', fontSize: 12 }} />
                       <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
@@ -624,7 +703,7 @@ function PurchaseModal({ articles, onSave, onClose }) {
         </div>
         <div className="md-f">
           <button className="btn btn-s" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-p" disabled={items.length === 0 || !supplier.trim()} onClick={() => onSave({ supplier, invoiceNum, items, total })}>Registrar Compra</button>
+          <button className="btn btn-p" disabled={items.length === 0 || !supplier.trim()} onClick={() => onSave({ supplier, invoiceNum, items: items.filter(i => i.articleId), total })}>Registrar Compra</button>
         </div>
       </div>
     </div>
