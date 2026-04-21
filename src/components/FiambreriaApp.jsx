@@ -11,52 +11,35 @@ const CATEGORIES = ["Jamones", "Quesos", "Embutidos", "Aceitunas", "Lácteos", "
 const EXP_CATS = ["Alquiler", "Expensas", "Luz", "Gas", "Agua", "Internet", "Teléfono", "Sueldos", "Impuestos", "Seguros", "Mantenimiento", "Limpieza", "Transporte", "Publicidad", "Otros"];
 const EXP_FREQ = [{ value: "unico", label: "Único" }, { value: "mensual", label: "Mensual" }, { value: "semanal", label: "Semanal" }];
 const EXP_TYPE = [{ value: "fijo", label: "Fijo" }, { value: "variable", label: "Variable" }];
-const UNITS = [
-  { value: "kg", label: "Kilogramo" },
-  { value: "g", label: "Gramo" },
-  { value: "und", label: "Unidad" },
-  { value: "lt", label: "Litro" },
-];
+const UNITS = [{ value: "kg", label: "Kilogramo" }, { value: "g", label: "Gramo" }, { value: "und", label: "Unidad" }, { value: "lt", label: "Litro" }];
 const unitLabel = (v) => UNITS.find(u => u.value === v)?.label || v;
 
-// ============ SUPABASE ADAPTER ============
 const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, category: r.category_name||r.category||'Otros' });
 const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
-const mapSale = (r) => ({ ...r, client: r.client_name, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit) })) });
+const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit) })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
 
 const db = {
   async getArticles() { const { data } = await supabase.from('v_articles').select('*'); return (data||[]).map(mapArt); },
-  async insertArticle(art) {
-    const { data: cats } = await supabase.from('categories').select('id,name');
-    const cat = (cats||[]).find(c => c.name === art.category);
-    const { data, error } = await supabase.from('articles').insert({ name: art.name, category_id: cat?.id||null, units: art.units||['kg'], purchase_price: art.purchasePrice||0, margin_percent: art.marginPercent||30, sale_price: art.salePrice||0, stock: art.stock||0, min_stock: art.minStock||5 }).select().single();
-    if (error) throw error; return data;
-  },
-  async updateArticle(id, art) {
-    const { data: cats } = await supabase.from('categories').select('id,name');
-    const cat = (cats||[]).find(c => c.name === art.category);
-    await supabase.from('articles').update({ name: art.name, category_id: cat?.id||null, units: art.units||['kg'], purchase_price: art.purchasePrice||0, margin_percent: art.marginPercent||30, sale_price: art.salePrice||0, stock: art.stock||0, min_stock: art.minStock||5 }).eq('id', id);
-  },
+  async insertArticle(a) { const { data: cats } = await supabase.from('categories').select('id,name'); const cat = (cats||[]).find(c => c.name === a.category); const { error } = await supabase.from('articles').insert({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5 }); if (error) throw error; },
+  async updateArticle(id, a) { const { data: cats } = await supabase.from('categories').select('id,name'); const cat = (cats||[]).find(c => c.name === a.category); await supabase.from('articles').update({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5 }).eq('id', id); },
   async deleteArticle(id) { await supabase.from('articles').update({ active: false }).eq('id', id); },
   async getPurchases() { const { data } = await supabase.from('purchase_invoices').select('*, purchase_invoice_items(*)').order('date', { ascending: false }); return (data||[]).map(mapPurch); },
-  async insertPurchase(p, items) {
-    const { data: inv, error: e1 } = await supabase.from('purchase_invoices').insert({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total }).select().single();
-    if (e1) throw e1;
-    await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: inv.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal })));
-  },
+  async insertPurchase(p, items) { const { data: inv, error } = await supabase.from('purchase_invoices').insert({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total }).select().single(); if (error) throw error; await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: inv.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal }))); },
+  async updatePurchase(id, p, items) { await supabase.from('purchase_invoice_items').delete().eq('purchase_invoice_id', id); await supabase.from('purchase_invoices').update({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total }).eq('id', id); await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal }))); },
   async deletePurchase(id) { await supabase.from('purchase_invoices').delete().eq('id', id); },
   async getSales() { const { data } = await supabase.from('sale_tickets').select('*, sale_ticket_items(*)').order('date', { ascending: false }); return (data||[]).map(mapSale); },
-  async insertSale(s, items) {
-    const { data: t, error: e1 } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single();
-    if (e1) throw e1;
-    await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit })));
-  },
+  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
+  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
   async deleteSale(id) { await supabase.from('sale_tickets').delete().eq('id', id); },
   async getExpenses() { const { data } = await supabase.from('expenses').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapExp); },
   async insertExpense(e) { await supabase.from('expenses').insert({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount }); },
   async updateExpense(id, e) { await supabase.from('expenses').update({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount }).eq('id', id); },
   async deleteExpense(id) { await supabase.from('expenses').update({ active: false }).eq('id', id); },
+  async getPayMethods() { const { data } = await supabase.from('pay_methods').select('*').order('created_at'); return data||[]; },
+  async insertPayMethod(pm) { await supabase.from('pay_methods').insert({ name: pm.name, active: pm.active }); },
+  async updatePayMethod(id, pm) { await supabase.from('pay_methods').update({ name: pm.name, active: pm.active }).eq('id', id); },
+  async deletePayMethod(id) { await supabase.from('pay_methods').delete().eq('id', id); },
 };
 
 const I = {
@@ -78,8 +61,10 @@ const I = {
   camera: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>,
   loader: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></path></svg>,
   wallet: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 12V7H5a2 2 0 010-4h14v4"/><path d="M3 5v14a2 2 0 002 2h16v-5"/><path d="M18 12a2 2 0 100 4h4v-4z"/></svg>,
+  creditcard: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2"/><path d="M1 10h22"/></svg>,
   download: <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>,
   brain: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 2a5 5 0 015 5c0 .8-.2 1.5-.5 2.2A5 5 0 0120 14a5 5 0 01-3 4.6V22h-2v-2h-6v2H7v-3.4A5 5 0 014 14a5 5 0 013.5-4.8A5 5 0 017 7a5 5 0 015-5z"/><path d="M12 2v8"/><path d="M8 8h8"/></svg>,
+  lock: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
 };
 
 // ============ CSS ============
@@ -93,25 +78,24 @@ export default function App() {
   const [sales, setSales] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [payMethods, setPayMethods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     (async () => {
-      const [a, s, p, e] = await Promise.all([db.getArticles(), db.getSales(), db.getPurchases(), db.getExpenses()]);
+      const [a, s, p, e, pm] = await Promise.all([db.getArticles(), db.getSales(), db.getPurchases(), db.getExpenses(), db.getPayMethods()]);
       setArticles(a);
       setSales(s);
       setPurchases(p);
       setExpenses(e);
+      setPayMethods(pm);
       setLoading(false);
     })();
   }, []);
 
   const notify = (m) => { setToast(m); setTimeout(() => setToast(null), 3000); };
-  const refresh = useCallback(async () => {
-    const [a,s,p,e] = await Promise.all([db.getArticles(),db.getSales(),db.getPurchases(),db.getExpenses()]);
-    setArticles(a);setSales(s);setPurchases(p);setExpenses(e);
-  }, []);
+  const refresh = useCallback(async () => { const [a,s,p,e,pm] = await Promise.all([db.getArticles(),db.getSales(),db.getPurchases(),db.getExpenses(),db.getPayMethods()]); setArticles(a);setSales(s);setPurchases(p);setExpenses(e);setPayMethods(pm); }, []);
 
   const nav = [
     { id: "dashboard", label: "Dashboard", icon: I.dashboard },
@@ -120,6 +104,7 @@ export default function App() {
     { id: "sales", label: "Ventas", icon: I.cart },
     { id: "expenses", label: "Gastos", icon: I.wallet },
     { id: "reports", label: "Reportes", icon: I.chart },
+    { id: "paymethods", label: "Medios de Pago", icon: I.creditcard },
     { id: "advisor", label: "Asesor IA", icon: I.brain },
   ];
 
@@ -156,7 +141,7 @@ export default function App() {
               </div>
             ))}
           </nav>
-          <div className="side-ft">v3.0 Cloud · Supabase + Vercel</div>
+          <div className="side-ft">v3.3 · Datos compartidos</div>
         </aside>
 
         <main className="main">
@@ -171,9 +156,10 @@ export default function App() {
             {pg === "dashboard" && <Dashboard articles={articles} sales={sales} purchases={purchases} expenses={expenses} setPg={setPg} lowStock={lowStock} outStock={outStock} />}
             {pg === "inventory" && <InventoryPage articles={articles} refresh={refresh} notify={notify} />}
             {pg === "purchases" && <PurchasesPage articles={articles} purchases={purchases} refresh={refresh} notify={notify} />}
-            {pg === "sales" && <SalesPage articles={articles} sales={sales} refresh={refresh} notify={notify} />}
+            {pg === "sales" && <SalesPage articles={articles} sales={sales} refresh={refresh} payMethods={payMethods} notify={notify} />}
             {pg === "expenses" && <ExpensesPage expenses={expenses} refresh={refresh} notify={notify} />}
-            {pg === "reports" && <ReportsPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} />}
+            {pg === "reports" && <ReportsPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} payMethods={payMethods} />}
+            {pg === "paymethods" && <PayMethodsPage payMethods={payMethods} refresh={refresh} notify={notify} />}
             {pg === "advisor" && <AIAdvisorPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} />}
           </div>
         </main>
@@ -267,7 +253,11 @@ function InventoryPage({ articles, refresh, notify }) {
 
   const blank = { name: "", category: "Otros", units: ["kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 };
 
+  const [delConfirm, setDelConfirm] = useState(null);
+
   const handleSave = async (art) => {
+    const dupCheck = articles.find(a => a.id !== art.id && a.name.trim().toLowerCase() === art.name.trim().toLowerCase());
+    if (dupCheck) { notify("⚠ Ya existe un artículo con ese nombre: " + dupCheck.name); return; }
     try {
       if (art.id) { await db.updateArticle(art.id, art); notify("Artículo actualizado"); }
       else { await db.insertArticle(art); notify("Artículo creado"); }
@@ -275,7 +265,7 @@ function InventoryPage({ articles, refresh, notify }) {
     } catch(e) { notify("Error: "+e.message); }
   };
 
-  const handleDel = async (id) => { if (confirm("¿Eliminar este artículo?")) { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); } };
+  const handleDel = async (id) => { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); setDelConfirm(null); };
 
   const stockStatus = (a) => {
     if (a.stock <= 0 && a.purchasePrice > 0) return "out";
@@ -331,7 +321,12 @@ function InventoryPage({ articles, refresh, notify }) {
                       <td>
                         <div style={{ display: "flex", gap: 4 }}>
                           <button className="btn-i" onClick={() => setModal({ ...a })}>{I.edit}</button>
-                          <button className="btn-i" onClick={() => handleDel(a.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                          {delConfirm === a.id ? (
+                            <><button className="btn-i" onClick={() => handleDel(a.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                            <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                          ) : (
+                            <button className="btn-i" onClick={() => setDelConfirm(a.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -342,27 +337,47 @@ function InventoryPage({ articles, refresh, notify }) {
         </div></div>
       </div>
 
-      {modal && <ArticleModal art={modal} onSave={handleSave} onClose={() => setModal(null)} />}
+      {modal && <ArticleModal art={modal} articles={articles} onSave={handleSave} onClose={() => setModal(null)} />}
     </div>
   );
 }
 
-function ArticleModal({ art, onSave, onClose }) {
+function ArticleModal({ art, articles, onSave, onClose }) {
   const [f, setF] = useState({ ...art, units: art.units || ["kg"] });
-  const salePrice = (f.purchasePrice || 0) * (1 + (f.marginPercent || 0) / 100);
+  const [priceMode, setPriceMode] = useState("margin"); // "margin" or "sale"
 
-  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  const calcSalePrice = (pp, mp) => Math.round((pp || 0) * (1 + (mp || 0) / 100) * 100) / 100;
+  const calcMargin = (pp, sp) => pp > 0 ? Math.round(((sp - pp) / pp) * 100 * 10) / 10 : 0;
+
+  const set = (k, v) => {
+    const upd = { ...f, [k]: v };
+    if (k === "purchasePrice") {
+      upd.salePrice = calcSalePrice(v, upd.marginPercent);
+    } else if (k === "marginPercent") {
+      upd.salePrice = calcSalePrice(upd.purchasePrice, v);
+    } else if (k === "salePrice") {
+      upd.marginPercent = calcMargin(upd.purchasePrice, v);
+    }
+    setF(upd);
+  };
+
   const toggleUnit = (u) => {
     const units = f.units.includes(u) ? f.units.filter(x => x !== u) : [...f.units, u];
-    if (units.length > 0) set("units", units);
+    if (units.length > 0) setF(p => ({ ...p, units }));
   };
+
+  const isDup = f.name.trim() && articles.some(a => a.id !== f.id && a.name.trim().toLowerCase() === f.name.trim().toLowerCase());
 
   return (
     <div className="mo" onClick={onClose}>
       <div className="md" onClick={e => e.stopPropagation()}>
         <div className="md-h"><h2>{f.id ? "Editar" : "Nuevo"} Artículo</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
         <div className="md-b">
-          <div className="fg"><label className="fl">Nombre del Artículo</label><input className="fi" value={f.name} onChange={e => set("name", e.target.value)} placeholder="Ej: Jamón Crudo Paladini" /></div>
+          <div className="fg">
+            <label className="fl">Nombre del Artículo</label>
+            <input className="fi" value={f.name} onChange={e => set("name", e.target.value)} placeholder="Ej: Jamón Crudo Paladini" />
+            {isDup && <div className="dup-warn">{I.warn} Ya existe un artículo con este nombre. No se podrá guardar duplicado.</div>}
+          </div>
           <div className="fr">
             <div className="fg">
               <label className="fl">Categoría</label>
@@ -382,27 +397,28 @@ function ArticleModal({ art, onSave, onClose }) {
           <div className="fr3">
             <div className="fg">
               <label className="fl">Precio Compra</label>
-              <input className="fi" readOnly value={f.purchasePrice ? money(f.purchasePrice) : "Se asigna en Compras"} style={{ fontSize: 12 }} />
-              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Se actualiza automáticamente al registrar una factura de compra</span>
+              <input className="fi" type="number" step="0.01" min="0" value={f.purchasePrice || ""} onChange={e => set("purchasePrice", parseFloat(e.target.value) || 0)} placeholder="0.00" />
+              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Editable · Se actualiza con facturas de compra</span>
             </div>
             <div className="fg">
               <label className="fl">Margen Ganancia (%)</label>
-              <input className="fi" type="number" step="1" min="0" value={f.marginPercent} onChange={e => set("marginPercent", parseFloat(e.target.value) || 0)} />
+              <input className="fi" type="number" step="0.1" min="0" value={f.marginPercent} onChange={e => set("marginPercent", parseFloat(e.target.value) || 0)} />
+              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Editar margen recalcula P.Venta</span>
             </div>
             <div className="fg">
-              <label className="fl">Precio Venta (auto)</label>
-              <input className="fi" readOnly value={f.purchasePrice ? money(salePrice) : "—"} />
-              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>= P.Compra + {f.marginPercent}%</span>
+              <label className="fl">Precio Venta</label>
+              <input className="fi" type="number" step="0.01" min="0" value={f.salePrice || ""} onChange={e => set("salePrice", parseFloat(e.target.value) || 0)} placeholder="0.00" />
+              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Editar precio recalcula margen</span>
             </div>
           </div>
           <div className="fr">
-            <div className="fg"><label className="fl">Stock Actual</label><input className="fi" type="number" step="0.01" min="0" value={f.stock} onChange={e => set("stock", parseFloat(e.target.value) || 0)} /><span style={{ fontSize: 10, color: "var(--tx3)", display: "block", marginTop: 2 }}>Se ajusta automáticamente con compras y ventas</span></div>
-            <div className="fg"><label className="fl">Stock Mínimo (alerta)</label><input className="fi" type="number" step="0.01" min="0" value={f.minStock || 5} onChange={e => set("minStock", parseFloat(e.target.value) || 0)} /></div>
+            <div className="fg"><label className="fl">Stock Actual</label><input className="fi" type="number" step="0.01" min="0" value={f.stock} onChange={e => setF(p => ({ ...p, stock: parseFloat(e.target.value) || 0 }))} /><span style={{ fontSize: 10, color: "var(--tx3)", display: "block", marginTop: 2 }}>Ajustable manualmente · Se actualiza con compras y ventas</span></div>
+            <div className="fg"><label className="fl">Stock Mínimo (alerta)</label><input className="fi" type="number" step="0.01" min="0" value={f.minStock || 5} onChange={e => setF(p => ({ ...p, minStock: parseFloat(e.target.value) || 0 }))} /></div>
           </div>
         </div>
         <div className="md-f">
           <button className="btn btn-s" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-p" disabled={!f.name.trim()} onClick={() => { const sv = f.purchasePrice ? Math.round(salePrice * 100) / 100 : 0; onSave({ ...f, salePrice: sv }); }}>
+          <button className="btn btn-p" disabled={!f.name.trim() || isDup} onClick={() => onSave({ ...f, salePrice: f.salePrice || 0 })}>
             {f.id ? "Guardar Cambios" : "Crear Artículo"}
           </button>
         </div>
@@ -414,31 +430,54 @@ function ArticleModal({ art, onSave, onClose }) {
 // ============ PURCHASES ============
 function PurchasesPage({ articles, purchases, refresh, notify }) {
   const [modal, setModal] = useState(false);
+  const [editPurch, setEditPurch] = useState(null);
   const [view, setView] = useState(null);
+  const [delConfirm, setDelConfirm] = useState(null);
   const sorted = useMemo(() => [...purchases].sort((a, b) => new Date(b.date) - new Date(a.date)), [purchases]);
 
-  const handleCreate = async (data) => {
+  const handleSave = async (data) => {
+    const { _newArticles: newArts, _editId, ...purchaseData } = data;
     try {
-      await db.insertPurchase(data, data.items);
+      for (const art of (newArts||[])) { try { await db.insertArticle(art); } catch(e) { console.error(e); } }
+      if (_editId) {
+        await db.updatePurchase(_editId, purchaseData, purchaseData.items);
+        notify("Compra actualizada");
+      } else {
+        await db.insertPurchase(purchaseData, purchaseData.items);
+        notify("Compra registrada: " + money(purchaseData.total));
+      }
       await refresh();
-      notify("Compra registrada: " + money(data.total));
-      setModal(false);
     } catch(e) { notify("Error: "+e.message); }
+    setModal(false); setEditPurch(null);
   };
 
-  const handleDel = async (id) => { if (confirm("¿Eliminar esta compra?")) { await db.deletePurchase(id); await refresh(); notify("Compra eliminada"); } };
+  const handleDel = async (id) => {
+    const p = purchases.find(x => x.id === id);
+    if (!p) return;
+    if (isPrevMonth(p.date)) { notify("⚠ No se puede eliminar: período cerrado"); setDelConfirm(null); return; }
+    await db.deletePurchase(id);
+    await refresh();
+    setDelConfirm(null);
+    notify("Compra eliminada · Stock revertido");
+  };
+
+  const openEdit = (p) => {
+    if (isPrevMonth(p.date)) { notify("⚠ No se puede editar: período cerrado"); return; }
+    setEditPurch(p);
+    setModal(true);
+  };
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
         <div />
-        <button className="btn btn-p" onClick={() => setModal(true)}>{I.plus} Nueva Compra</button>
+        <button className="btn btn-p" onClick={() => { setEditPurch(null); setModal(true); }}>{I.plus} Nueva Compra</button>
       </div>
       <div className="card"><div style={{ padding: 0 }}><div className="tw">
         <table>
-          <thead><tr><th>#</th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Total</th><th style={{ width: 90 }}></th></tr></thead>
+          <thead><tr><th>#</th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Total</th><th style={{ width: 110 }}></th></tr></thead>
           <tbody>
-            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay compras. Registrá tu primera factura de proveedor.</p></div></td></tr> :
+            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay compras. Registrá tu primera factura.</p></div></td></tr> :
               sorted.map((p, i) => (
                 <tr key={p.id}>
                   <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{sorted.length - i}</td>
@@ -447,14 +486,25 @@ function PurchasesPage({ articles, purchases, refresh, notify }) {
                   <td>{p.invoiceNum || "—"}</td>
                   <td>{p.items.length}</td>
                   <td style={{ fontWeight: 600 }}>{money(p.total)}</td>
-                  <td><div style={{ display: "flex", gap: 4 }}><button className="btn-i" onClick={() => setView(p)}>{I.eye}</button><button className="btn-i" onClick={() => handleDel(p.id)} style={{ color: "var(--rd)" }}>{I.trash}</button></div></td>
+                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <button className="btn-i" onClick={() => setView(p)}>{I.eye}</button>
+                    {isPrevMonth(p.date) ? <span className="lock-badge">{I.lock} Cerrado</span> : (<>
+                      <button className="btn-i" onClick={() => openEdit(p)}>{I.edit}</button>
+                      {delConfirm === p.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(p.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                      ) : (
+                        <button className="btn-i" onClick={() => setDelConfirm(p.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                      )}
+                    </>)}
+                  </div></td>
                 </tr>
               ))}
           </tbody>
         </table>
       </div></div></div>
 
-      {modal && <PurchaseModal articles={articles} onSave={handleCreate} onClose={() => setModal(false)} />}
+      {modal && <PurchaseModal articles={articles} editData={editPurch} onSave={handleSave} onClose={() => { setModal(false); setEditPurch(null); }} />}
       {view && (
         <div className="mo" onClick={() => setView(null)}>
           <div className="md" onClick={e => e.stopPropagation()}>
@@ -478,10 +528,10 @@ function PurchasesPage({ articles, purchases, refresh, notify }) {
   );
 }
 
-function PurchaseModal({ articles, onSave, onClose }) {
-  const [supplier, setSupplier] = useState("");
-  const [invoiceNum, setInvoiceNum] = useState("");
-  const [items, setItems] = useState([]);
+function PurchaseModal({ articles, editData, onSave, onClose }) {
+  const [supplier, setSupplier] = useState(editData?.supplier || "");
+  const [invoiceNum, setInvoiceNum] = useState(editData?.invoiceNum || "");
+  const [items, setItems] = useState(editData ? editData.items.map(it => ({ ...it, _key: uid() })) : []);
   const [q, setQ] = useState("");
   const [showDD, setShowDD] = useState(false);
   const [scanning, setScanning] = useState(false);
@@ -489,131 +539,118 @@ function PurchaseModal({ articles, onSave, onClose }) {
   const [scanMsg, setScanMsg] = useState(null);
   const [newArticles, setNewArticles] = useState([]);
   const [dragging, setDragging] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newArt, setNewArt] = useState({ name: "", category: "Otros", units: ["kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 });
+  const [linkIdx, setLinkIdx] = useState(-1);
+  const [linkQ, setLinkQ] = useState("");
 
   const allArticles = useMemo(() => [...articles, ...newArticles], [articles, newArticles]);
+  const avail = q ? allArticles.filter(a => (a.name || "").toLowerCase().includes(q.toLowerCase()) && !items.find(i => i.articleId === a.id)) : [];
 
-  const avail = allArticles.filter(a => a.name.toLowerCase().includes(q.toLowerCase()) && !items.find(i => i.articleId === a.id));
-
-  const addItem = (a) => {
-    setItems([...items, { articleId: a.id, articleName: a.name, unit: (a.units || ["kg"])[0], quantity: 1, unitCost: a.purchasePrice || 0, subtotal: a.purchasePrice || 0 }]);
+  const addExisting = (id, name, units, price) => {
+    setItems(prev => [...prev, { _key: uid(), articleId: id, articleName: name, unit: (units || ["kg"])[0], quantity: 1, unitCost: price || 0, subtotal: price || 0, isNew: false }]);
     setQ(""); setShowDD(false);
   };
 
-  const updItem = (idx, k, v) => {
-    const u = [...items]; u[idx][k] = v;
-    if (k === "quantity" || k === "unitCost") u[idx].subtotal = (u[idx].quantity || 0) * (u[idx].unitCost || 0);
-    setItems(u);
+  const updItem = (idx, key, val) => {
+    setItems(prev => prev.map((it, i) => {
+      if (i !== idx) return it;
+      const upd = { ...it, [key]: val };
+      if (key === "quantity" || key === "unitCost") upd.subtotal = (upd.quantity || 0) * (upd.unitCost || 0);
+      return upd;
+    }));
+    if (key === "articleName") {
+      const artId = items[idx]?.articleId;
+      const na = artId && newArticles.find(a => a.id === artId);
+      if (na) setNewArticles(prev => prev.map(a => a.id === artId ? { ...a, name: val } : a));
+    }
   };
 
-  const total = items.reduce((s, i) => s + i.subtotal, 0);
+  const doLink = (idx, a) => {
+    setItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, articleId: a.id, articleName: a.name || "", unit: (a.units || ["kg"])[0], unitCost: a.purchasePrice || 0, subtotal: (it.quantity || 1) * (a.purchasePrice || 0), isNew: false }));
+    setLinkIdx(-1); setLinkQ("");
+  };
+
+  const total = items.reduce((s, i) => s + (i.subtotal || 0), 0);
+  const isDupName = (name) => allArticles.some(a => (a.name || "").trim().toLowerCase() === name.trim().toLowerCase());
+
+  const handleInlineCreate = () => {
+    if (!newArt.name.trim() || isDupName(newArt.name)) return;
+    const art = { ...newArt, id: uid(), createdAt: new Date().toISOString(), salePrice: Math.round((newArt.purchasePrice || 0) * (1 + (newArt.marginPercent || 30) / 100) * 100) / 100 };
+    setNewArticles(prev => [...prev, art]);
+    setItems(prev => [...prev, { _key: uid(), articleId: art.id, articleName: art.name, unit: (art.units || ["kg"])[0], quantity: 1, unitCost: art.purchasePrice || 0, subtotal: art.purchasePrice || 0, isNew: true }]);
+    setNewArt({ name: "", category: "Otros", units: ["kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 });
+    setShowCreate(false);
+  };
 
   const handleFile = async (file) => {
     if (!file || !file.type.startsWith("image/")) return;
     const reader = new FileReader();
     reader.onload = async (e) => {
       const dataUrl = e.target.result;
-      setScanPreview(dataUrl);
-      setScanning(true);
-      setScanMsg("Analizando factura con IA...");
+      setScanPreview(dataUrl); setScanning(true); setScanMsg("Analizando factura con IA...");
       try {
         const base64 = dataUrl.split(",")[1];
-        const mediaType = file.type;
-        const resp = await fetch("/api/scan-invoice", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: base64, mimeType: mediaType
- }),
+        const resp = await fetch("/api/scan-invoice", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: base64, mimeType: file.type })
         });
         if (!resp.ok) throw new Error("Error al procesar");
         const parsed = await resp.json();
-
         if (parsed.supplier) setSupplier(parsed.supplier);
         if (parsed.invoiceNum) setInvoiceNum(parsed.invoiceNum);
-
-        let created = 0;
-        const newArts = [];
-        const newItems = [];
-
+        let created = 0; const newArts = [], newItems = [], currentAll = [...allArticles];
         (parsed.items || []).forEach(pi => {
           if (!pi.name) return;
-          let art = allArticles.find(a => a.name.toLowerCase().trim() === pi.name.toLowerCase().trim());
+          let art = currentAll.find(a => (a.name||"").toLowerCase().trim() === pi.name.toLowerCase().trim());
           if (!art) {
-            art = {
-              id: uid(),
-              name: pi.name.trim(),
-              category: "Otros",
-              units: [pi.unit || "kg"],
-              marginPercent: 30,
-              minStock: 5,
-              stock: 0,
-              purchasePrice: pi.unitCost || 0,
-              salePrice: Math.round((pi.unitCost || 0) * 1.3 * 100) / 100,
-              createdAt: new Date().toISOString(),
-            };
-            newArts.push(art);
-            created++;
+            art = { id: uid(), name: pi.name.trim(), category: "Otros", units: [pi.unit || "kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: pi.unitCost || 0, salePrice: Math.round((pi.unitCost || 0) * 1.3 * 100) / 100, createdAt: new Date().toISOString() };
+            newArts.push(art); currentAll.push(art); created++;
           }
-          newItems.push({
-            articleId: art.id,
-            articleName: art.name || pi.name,
-            unit: pi.unit || (art.units || ["kg"])[0],
-            quantity: pi.quantity || 1,
-            unitCost: pi.unitCost || art.purchasePrice || 0,
-            subtotal: (pi.quantity || 1) * (pi.unitCost || art.purchasePrice || 0),
-            isNew: !articles.find(a => a.id === art.id),
-          });
+          newItems.push({ _key: uid(), articleId: art.id, articleName: art.name, unit: pi.unit || (art.units || ["kg"])[0], quantity: pi.quantity || 1, unitCost: pi.unitCost || art.purchasePrice || 0, subtotal: (pi.quantity || 1) * (pi.unitCost || art.purchasePrice || 0), isNew: !articles.find(a => a.id === art.id) });
         });
-
         if (newArts.length > 0) setNewArticles(prev => [...prev, ...newArts]);
         setItems(prev => [...prev, ...newItems]);
-        setScanMsg(`Se detectaron ${newItems.length} artículo(s)${created > 0 ? ` · ${created} nuevo(s) se crearán automáticamente` : ""}`);
-      } catch (err) {
-        console.error("Scan error:", err);
-        setScanMsg("Error al analizar la factura. Intentá con otra foto o cargá los datos manualmente.");
-      }
+        setScanMsg(`${newItems.length} artículo(s) detectados${created > 0 ? ` · ${created} nuevo(s)` : ""}`);
+      } catch (err) { console.error(err); setScanMsg("Error al analizar. Cargá manualmente."); }
       setScanning(false);
     };
     reader.readAsDataURL(file);
   };
 
-  const handleDrop = (e) => { e.preventDefault(); setDragging(false); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); };
-  const handleDragOver = (e) => { e.preventDefault(); setDragging(true); };
-  const handleDragLeave = () => setDragging(false);
-
-  const handleSave = async () => {
-    for (const art of newArticles) { try { await db.insertArticle(art); } catch(e) { console.error(e); } }
-    onSave({ supplier, invoiceNum, items: items.map(({ isNew, ...r }) => r), total });
+  const handleSave = () => {
+    const resolvedItems = items.map(({ isNew, _key, ...rest }) => ({
+      ...rest,
+      articleName: rest.articleName || allArticles.find(a => a.id === rest.articleId)?.name || ""
+    }));
+    onSave({ supplier, invoiceNum, items: resolvedItems, total, _newArticles: newArticles, _editId: editData?.id || null });
   };
+
+  const linkResults = linkQ ? allArticles.filter(a => (a.name || "").toLowerCase().includes(linkQ.toLowerCase())).slice(0, 6) : [];
 
   return (
     <div className="mo" onClick={onClose}>
       <div className="md md-lg" onClick={e => e.stopPropagation()}>
-        <div className="md-h"><h2>Registrar Factura de Compra</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
+        <div className="md-h"><h2>{editData ? "Editar" : "Registrar"} Factura de Compra</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
         <div className="md-b">
-          {/* SCAN ZONE */}
-          {!scanning && !scanMsg && (
-            <div
-              className={`scan-zone ${dragging ? "dragging" : ""}`}
-              onClick={() => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.capture = "environment"; inp.onchange = (e) => handleFile(e.target.files[0]); inp.click(); }}
-              onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}
-            >
+          {!editData && !scanning && !scanMsg && (
+            <div className={`scan-zone ${dragging ? "dragging" : ""}`}
+              onClick={() => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.capture = "environment"; inp.onchange = (ev) => handleFile(ev.target.files[0]); inp.click(); }}
+              onDrop={(ev) => { ev.preventDefault(); setDragging(false); if (ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); }}
+              onDragOver={(ev) => { ev.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)}>
               <div style={{ marginBottom: 8, color: "var(--ac)" }}>{I.camera}</div>
-              <div style={{ fontWeight: 600, fontSize: 14, color: "var(--tx)", marginBottom: 4 }}>Escaneá tu factura con IA</div>
-              <div style={{ fontSize: 12, color: "var(--tx3)" }}>Tocá para sacar una foto o arrastrá una imagen. Claude extrae proveedor, artículos y precios automáticamente.</div>
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Escaneá tu factura con IA</div>
+              <div style={{ fontSize: 12, color: "var(--tx3)" }}>Foto o arrastrá imagen</div>
             </div>
           )}
           {scanning && (
             <div className="scan-loading">
-              {scanPreview && <img src={scanPreview} className="scan-preview" alt="Factura" />}
+              {scanPreview && <img src={scanPreview} className="scan-preview" alt="" />}
               <div className="scan-spin"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--ac)" strokeWidth="2.5" strokeLinecap="round"><path d="M21 12a9 9 0 11-6.219-8.56"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur=".8s" repeatCount="indefinite"/></path></svg></div>
-              <div className="scan-pulse" style={{ fontWeight: 600, fontSize: 14, color: "var(--ac)" }}>Analizando factura con IA...</div>
-              <div style={{ fontSize: 12, color: "var(--tx3)" }}>Extrayendo proveedor, artículos, cantidades y precios</div>
+              <div className="scan-pulse" style={{ fontWeight: 600, color: "var(--ac)" }}>Analizando...</div>
             </div>
           )}
           {scanMsg && !scanning && (
-            <div className="scan-result">
-              {I.check}
-              <span>{scanMsg}</span>
+            <div className="scan-result">{I.check}<span>{scanMsg}</span>
               <button className="btn btn-sm btn-s" style={{ marginLeft: "auto" }} onClick={() => { setScanMsg(null); setScanPreview(null); }}>Escanear otra</button>
             </div>
           )}
@@ -623,38 +660,92 @@ function PurchaseModal({ articles, onSave, onClose }) {
               <div className="fg"><label className="fl">Proveedor</label><input className="fi" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="Nombre del proveedor" /></div>
               <div className="fg"><label className="fl">Nº Factura</label><input className="fi" value={invoiceNum} onChange={e => setInvoiceNum(e.target.value)} placeholder="Ej: FAC-0001" /></div>
             </div>
-            <div className="fg" style={{ position: "relative" }}>
-              <label className="fl">Agregar Artículo (manual)</label>
-              <input className="fi" placeholder="Buscar artículo..." value={q} onChange={e => { setQ(e.target.value); setShowDD(true); }} onFocus={() => setShowDD(true)} onBlur={() => setTimeout(() => setShowDD(false), 200)} />
-              {showDD && q && (
-                <div className="dd">
-                  {avail.length === 0 ? <div style={{ padding: 10, color: "var(--tx3)", fontSize: 12 }}>No encontrado. Crealo primero en Inventario.</div> :
-                    avail.slice(0, 8).map(a => (
-                      <div key={a.id} className="dd-i" onMouseDown={() => addItem(a)}>
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 14 }}>
+              <div className="fg" style={{ position: "relative", flex: 1, marginBottom: 0 }}>
+                <label className="fl">Agregar Artículo existente</label>
+                <input className="fi" placeholder="Buscar artículo..." value={q}
+                  onChange={e => { setQ(e.target.value); setShowDD(true); }}
+                  onFocus={() => q && setShowDD(true)}
+                  onBlur={() => setTimeout(() => setShowDD(false), 250)} />
+                {showDD && avail.length > 0 && (
+                  <div className="dd">
+                    {avail.slice(0, 8).map(a => (
+                      <div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addExisting(a.id, a.name, a.units, a.purchasePrice); }}>
                         <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({(a.units || []).map(unitLabel).join(", ")})</span></span>
                         {a.purchasePrice > 0 && <span style={{ fontSize: 12, color: "var(--tx3)" }}>Últ: {money(a.purchasePrice)}</span>}
                       </div>
                     ))}
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-s" style={{ whiteSpace: "nowrap", marginBottom: 0 }} onClick={() => setShowCreate(!showCreate)}>{I.plus} Crear Artículo</button>
             </div>
+
+            {showCreate && (
+              <div className="inline-create">
+                <h4>Crear Artículo Rápido</h4>
+                <div className="fr3">
+                  <div className="fg"><label className="fl">Nombre</label><input className="fi" value={newArt.name} onChange={e => setNewArt(p => ({ ...p, name: e.target.value }))} placeholder="Nombre" />
+                    {newArt.name.trim() && isDupName(newArt.name) && <div className="dup-warn">{I.warn} Ya existe</div>}
+                  </div>
+                  <div className="fg"><label className="fl">Categoría</label><select className="fs" value={newArt.category} onChange={e => setNewArt(p => ({ ...p, category: e.target.value }))}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+                  <div className="fg"><label className="fl">Unidad</label><select className="fs" value={newArt.units[0]} onChange={e => setNewArt(p => ({ ...p, units: [e.target.value] }))}>{UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}</select></div>
+                </div>
+                <div className="fr3">
+                  <div className="fg"><label className="fl">P. Compra</label><input className="fi" type="number" step="0.01" min="0" value={newArt.purchasePrice || ""} onChange={e => setNewArt(p => ({ ...p, purchasePrice: parseFloat(e.target.value) || 0 }))} /></div>
+                  <div className="fg"><label className="fl">Margen %</label><input className="fi" type="number" step="1" min="0" value={newArt.marginPercent} onChange={e => setNewArt(p => ({ ...p, marginPercent: parseFloat(e.target.value) || 0 }))} /></div>
+                  <div className="fg"><label className="fl">Stock</label><input className="fi" type="number" step="0.01" min="0" value={newArt.stock || ""} onChange={e => setNewArt(p => ({ ...p, stock: parseFloat(e.target.value) || 0 }))} /></div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button className="btn btn-p btn-sm" disabled={!newArt.name.trim() || isDupName(newArt.name)} onClick={handleInlineCreate}>{I.check} Crear y Agregar</button>
+                  <button className="btn btn-s btn-sm" onClick={() => setShowCreate(false)}>Cancelar</button>
+                </div>
+              </div>
+            )}
+
             {items.length > 0 && (
               <>
                 <div className="ti">
                   <div className="ti-r ti-h" style={{ gridTemplateColumns: "2fr 70px 90px 100px 100px 36px" }}><span>Artículo</span><span>Cant.</span><span>Unidad</span><span>Costo U.</span><span>Subtotal</span><span></span></div>
                   {items.map((it, idx) => {
-                    const art = allArticles.find(a => a.id === it.articleId);
+                    const resolvedName = it.articleName || allArticles.find(a => a.id === it.articleId)?.name || "";
                     return (
-                      <div className="ti-r" key={idx} style={{ gridTemplateColumns: "2fr 70px 90px 100px 100px 36px" }}>
-                        <span style={{ fontWeight: 500 }}>{it.articleName}{it.isNew && <span className="scan-new">NUEVO</span>}</span>
-                        <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
-                        <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>
-                          {(art?.units || ["kg"]).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
-                        </select>
-                        <input className="fi" type="number" step="0.01" min="0" value={it.unitCost} onChange={e => updItem(idx, "unitCost", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
-                        <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
-                        <button className="btn-i" onClick={() => setItems(items.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                    <div className="ti-r" key={it._key || it.articleId || idx} style={{ gridTemplateColumns: "2fr 70px 90px 100px 100px 36px" }}>
+                      <div>
+                        {it.isNew ? (
+                          <input className="fi" value={resolvedName} onChange={e => updItem(idx, "articleName", e.target.value)} style={{ padding: "4px 7px", fontSize: 12, fontWeight: 500 }} />
+                        ) : (
+                          <div style={{ fontWeight: 500, fontSize: 12, padding: "4px 0", minHeight: 24 }}>{resolvedName}</div>
+                        )}
+                        <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 2 }}>
+                          {it.isNew && <span className="scan-new">NUEVO</span>}
+                          <button className="btn-i" title="Vincular a artículo existente" onClick={() => { setLinkIdx(linkIdx === idx ? -1 : idx); setLinkQ(""); }} style={{ padding: 2, color: linkIdx === idx ? "var(--ac)" : "var(--tx3)", fontSize: 10 }}>{I.search}</button>
+                        </div>
+                        {linkIdx === idx && (
+                          <div style={{ marginTop: 4 }}>
+                            <input className="fi" placeholder="Buscar artículo para vincular..." value={linkQ} onChange={e => setLinkQ(e.target.value)}
+                              style={{ padding: "4px 8px", fontSize: 11, background: "var(--acL)", border: "1px solid var(--ac)" }} autoFocus />
+                            {linkResults.length > 0 && (
+                              <div style={{ border: "1px solid var(--br)", borderRadius: "0 0 8px 8px", background: "var(--bg2)", maxHeight: 150, overflowY: "auto" }}>
+                                {linkResults.map(a => (
+                                  <div key={a.id} className="dd-i" onClick={() => doLink(idx, a)}>
+                                    <span style={{ fontSize: 12 }}>{a.name}</span>
+                                    <span style={{ fontSize: 10, color: "var(--tx3)" }}>{money(a.purchasePrice)}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
+                      <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
+                      <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>
+                        {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
+                      </select>
+                      <input className="fi" type="number" step="0.01" min="0" value={it.unitCost} onChange={e => updItem(idx, "unitCost", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
+                      <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
+                      <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                    </div>
                     );
                   })}
                 </div>
@@ -665,7 +756,7 @@ function PurchaseModal({ articles, onSave, onClose }) {
         </div>
         <div className="md-f">
           <button className="btn btn-s" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-p" disabled={items.length === 0 || !supplier.trim() || scanning} onClick={handleSave}>Registrar Compra</button>
+          <button className="btn btn-p" disabled={items.length === 0 || !supplier.trim() || scanning} onClick={handleSave}>{editData ? "Guardar Cambios" : "Registrar Compra"}</button>
         </div>
       </div>
     </div>
@@ -673,33 +764,67 @@ function PurchaseModal({ articles, onSave, onClose }) {
 }
 
 // ============ SALES ============
-function SalesPage({ articles, sales, refresh, notify }) {
+function SalesPage({ articles, sales, refresh, payMethods, notify }) {
   const [modal, setModal] = useState(false);
+  const [editSale, setEditSale] = useState(null);
   const [view, setView] = useState(null);
   const [search, setSearch] = useState("");
+  const [pmFilter, setPmFilter] = useState("");
+  const [delConfirm, setDelConfirm] = useState(null);
   const sorted = useMemo(() => [...sales].sort((a, b) => new Date(b.date) - new Date(a.date)), [sales]);
-  const filtered = sorted.filter(s => (s.client || "").toLowerCase().includes(search.toLowerCase()) || s.items.some(i => (i.articleName || "").toLowerCase().includes(search.toLowerCase())));
+  const filtered = sorted.filter(s =>
+    ((s.client || "").toLowerCase().includes(search.toLowerCase()) || s.items.some(i => (i.articleName || "").toLowerCase().includes(search.toLowerCase())))
+    && (!pmFilter || s.payMethod === pmFilter)
+  );
+  const activePM = payMethods.filter(pm => pm.active);
 
-  const handleCreate = async (data) => {
+  const handleSave = async (data) => {
+    const { _editId, ...saleData } = data;
     try {
-      await db.insertSale(data, data.items);
+      if (_editId) {
+        await db.updateSale(_editId, saleData, saleData.items);
+        notify("Venta actualizada");
+      } else {
+        await db.insertSale(saleData, saleData.items);
+        notify("Venta registrada: " + money(saleData.total));
+      }
       await refresh();
-      notify("Venta registrada: " + money(data.total));
-      setModal(false);
     } catch(e) { notify("Error: "+e.message); }
+    setModal(false); setEditSale(null);
   };
 
-  const handleDel = async (id) => { if (confirm("¿Eliminar esta venta?")) { await db.deleteSale(id); await refresh(); notify("Venta eliminada"); } };
+  const handleDel = async (id) => {
+    const s = sales.find(x => x.id === id);
+    if (!s) return;
+    if (isPrevMonth(s.date)) { notify("⚠ No se puede eliminar: período cerrado"); setDelConfirm(null); return; }
+    await db.deleteSale(id);
+    await refresh();
+    setDelConfirm(null);
+    notify("Venta eliminada · Stock revertido");
+  };
+
+  const openEdit = (s) => {
+    if (isPrevMonth(s.date)) { notify("⚠ No se puede editar: período cerrado"); return; }
+    setEditSale(s); setModal(true);
+  };
+
+  const pmName = (id) => payMethods.find(pm => pm.id === id)?.name || id || "—";
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
-        <div className="sb">{I.search}<input className="fi" placeholder="Buscar por cliente o artículo..." value={search} onChange={e => setSearch(e.target.value)} /></div>
-        <button className="btn btn-p" onClick={() => setModal(true)}>{I.plus} Nueva Venta</button>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <div className="sb">{I.search}<input className="fi" placeholder="Buscar por cliente o artículo..." value={search} onChange={e => setSearch(e.target.value)} /></div>
+          <select className="fs" style={{ width: "auto" }} value={pmFilter} onChange={e => setPmFilter(e.target.value)}>
+            <option value="">Todos los pagos</option>
+            {payMethods.map(pm => <option key={pm.id} value={pm.id}>{pm.name}</option>)}
+          </select>
+        </div>
+        <button className="btn btn-p" onClick={() => { setEditSale(null); setModal(true); }}>{I.plus} Nueva Venta</button>
       </div>
       <div className="card"><div style={{ padding: 0 }}><div className="tw">
         <table>
-          <thead><tr><th>#</th><th>Fecha</th><th>Cliente</th><th>Artículos</th><th>Total</th><th>Ganancia</th><th style={{ width: 90 }}></th></tr></thead>
+          <thead><tr><th>#</th><th>Fecha</th><th>Cliente</th><th>Pago</th><th>Total</th><th>Ganancia</th><th style={{ width: 110 }}></th></tr></thead>
           <tbody>
             {filtered.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay ventas registradas</p></div></td></tr> :
               filtered.map((s) => (
@@ -707,25 +832,37 @@ function SalesPage({ articles, sales, refresh, notify }) {
                   <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{sorted.length - sorted.indexOf(s)}</td>
                   <td style={{ fontSize: 12 }}>{fDateTime(s.date)}</td>
                   <td style={{ fontWeight: 500 }}>{s.client || "—"}</td>
-                  <td>{s.items.length}</td>
+                  <td><span className="pm-badge">{pmName(s.payMethod)}</span></td>
                   <td style={{ fontWeight: 600 }}>{money(s.total)}</td>
                   <td><span className="badge b-gn">{money(s.profit)}</span></td>
-                  <td><div style={{ display: "flex", gap: 4 }}><button className="btn-i" onClick={() => setView(s)}>{I.eye}</button><button className="btn-i" onClick={() => handleDel(s.id)} style={{ color: "var(--rd)" }}>{I.trash}</button></div></td>
+                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <button className="btn-i" onClick={() => setView(s)}>{I.eye}</button>
+                    {isPrevMonth(s.date) ? <span className="lock-badge">{I.lock} Cerrado</span> : (<>
+                      <button className="btn-i" onClick={() => openEdit(s)}>{I.edit}</button>
+                      {delConfirm === s.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(s.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                      ) : (
+                        <button className="btn-i" onClick={() => setDelConfirm(s.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                      )}
+                    </>)}
+                  </div></td>
                 </tr>
               ))}
           </tbody>
         </table>
       </div></div></div>
 
-      {modal && <SaleModal articles={articles} onSave={handleCreate} onClose={() => setModal(false)} />}
+      {modal && <SaleModal articles={articles} payMethods={activePM} editData={editSale} onSave={handleSave} onClose={() => { setModal(false); setEditSale(null); }} />}
       {view && (
         <div className="mo" onClick={() => setView(null)}>
           <div className="md" onClick={e => e.stopPropagation()}>
             <div className="md-h"><h2>Detalle de Venta</h2><button className="btn-i" onClick={() => setView(null)}>{I.x}</button></div>
             <div className="md-b">
-              <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 13, color: "var(--tx2)" }}>
+              <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 13, color: "var(--tx2)", flexWrap: "wrap" }}>
                 <span>Fecha: <strong>{fDateTime(view.date)}</strong></span>
                 <span>Cliente: <strong>{view.client || "Sin especificar"}</strong></span>
+                <span>Pago: <strong><span className="pm-badge">{pmName(view.payMethod)}</span></strong></span>
               </div>
               <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Unidad</th><th>P. Venta</th><th>Subtotal</th><th>Ganancia</th></tr></thead>
                 <tbody>{view.items.map((it, i) => (
@@ -743,72 +880,108 @@ function SalesPage({ articles, sales, refresh, notify }) {
   );
 }
 
-function SaleModal({ articles, onSave, onClose }) {
-  const [client, setClient] = useState("");
-  const [items, setItems] = useState([]);
+function SaleModal({ articles, payMethods, editData, onSave, onClose }) {
+  const [client, setClient] = useState(editData?.client || "");
+  const [payMethod, setPayMethod] = useState(editData?.payMethod || payMethods[0]?.id || "");
+  const [promo, setPromo] = useState(false);
+  const [items, setItems] = useState(() => {
+    if (!editData) return [];
+    return editData.items.map(it => ({ ...it, origPrice: it.unitPrice }));
+  });
   const [q, setQ] = useState("");
   const [showDD, setShowDD] = useState(false);
 
-  const avail = articles.filter(a => a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id));
+  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id)) : [];
 
-  const addItem = (a) => {
-    setItems([...items, {
-      articleId: a.id, articleName: a.name, unit: (a.units || ["kg"])[0],
-      quantity: 1, unitPrice: a.salePrice, costPrice: a.purchasePrice,
-      subtotal: a.salePrice, profit: a.salePrice - a.purchasePrice, stock: a.stock
+  const addExisting = (id, name, units, salePrice, purchasePrice, stock) => {
+    setItems(prev => [...prev, {
+      articleId: id, articleName: name, unit: (units || ["kg"])[0],
+      quantity: 1, unitPrice: salePrice, origPrice: salePrice, costPrice: purchasePrice,
+      subtotal: salePrice, profit: salePrice - purchasePrice, stock: stock
     }]);
     setQ(""); setShowDD(false);
   };
 
-  const updItem = (idx, k, v) => {
-    const u = [...items]; u[idx][k] = v;
-    if (k === "quantity") { u[idx].subtotal = v * u[idx].unitPrice; u[idx].profit = v * (u[idx].unitPrice - u[idx].costPrice); }
-    setItems(u);
+  const updItem = (idx, key, val) => {
+    setItems(prev => prev.map((it, i) => {
+      if (i !== idx) return it;
+      const upd = { ...it, [key]: val };
+      if (key === "quantity" || key === "unitPrice") {
+        upd.subtotal = (upd.quantity || 0) * (upd.unitPrice || 0);
+        upd.profit = (upd.quantity || 0) * ((upd.unitPrice || 0) - (upd.costPrice || 0));
+      }
+      return upd;
+    }));
   };
 
-  const total = items.reduce((s, i) => s + i.subtotal, 0);
-  const profit = items.reduce((s, i) => s + i.profit, 0);
+  const total = items.reduce((s, i) => s + (i.subtotal || 0), 0);
+  const profit = items.reduce((s, i) => s + (i.profit || 0), 0);
 
   return (
     <div className="mo" onClick={onClose}>
       <div className="md md-lg" onClick={e => e.stopPropagation()}>
-        <div className="md-h"><h2>Nuevo Ticket de Venta</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
+        <div className="md-h"><h2>{editData ? "Editar" : "Nuevo"} Ticket de Venta</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
         <div className="md-b">
-          <div className="fg"><label className="fl">Cliente (opcional)</label><input className="fi" value={client} onChange={e => setClient(e.target.value)} placeholder="Nombre del cliente" /></div>
-          <div className="fg" style={{ position: "relative" }}>
-            <label className="fl">Agregar Artículo</label>
-            <input className="fi" placeholder="Buscar artículo..." value={q} onChange={e => { setQ(e.target.value); setShowDD(true); }} onFocus={() => setShowDD(true)} onBlur={() => setTimeout(() => setShowDD(false), 200)} />
-            {showDD && q && (
-              <div className="dd">
-                {avail.length === 0 ? <div style={{ padding: 10, color: "var(--tx3)", fontSize: 12 }}>No encontrado o sin precio</div> :
-                  avail.slice(0, 8).map(a => (
-                    <div key={a.id} className="dd-i" onMouseDown={() => addItem(a)}>
-                      <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({a.stock} {(a.units || [])[0]})</span></span>
-                      <span style={{ fontWeight: 600, color: "var(--ac)", fontSize: 12 }}>{money(a.salePrice)}</span>
-                    </div>
-                  ))}
+          <div className="fr">
+            <div className="fg"><label className="fl">Cliente (opcional)</label><input className="fi" value={client} onChange={e => setClient(e.target.value)} placeholder="Nombre del cliente" /></div>
+            <div className="fg">
+              <label className="fl">Método de Pago</label>
+              <div className="pm-grid">
+                {payMethods.map(pm => (
+                  <button key={pm.id} type="button" className={`pm-chip ${payMethod === pm.id ? "on" : ""}`} onClick={() => setPayMethod(pm.id)}>
+                    {payMethod === pm.id && I.check} {pm.name}
+                  </button>
+                ))}
               </div>
-            )}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+            <div className="fg" style={{ position: "relative", flex: 1, marginBottom: 0 }}>
+              <label className="fl">Agregar Artículo</label>
+              <input className="fi" placeholder="Buscar artículo..." value={q} onChange={e => { setQ(e.target.value); setShowDD(true); }} onFocus={() => q && setShowDD(true)} onBlur={() => setTimeout(() => setShowDD(false), 250)} />
+              {showDD && avail.length > 0 && (
+                <div className="dd">
+                  {avail.slice(0, 8).map(a => (
+                      <div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addExisting(a.id, a.name, a.units, a.salePrice, a.purchasePrice, a.stock); }}>
+                        <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({a.stock} {(a.units || [])[0]})</span></span>
+                        <span style={{ fontWeight: 600, color: "var(--ac)", fontSize: 12 }}>{money(a.salePrice)}</span>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, color: promo ? "var(--ac)" : "var(--tx3)", whiteSpace: "nowrap", marginTop: 16 }}>
+              <input type="checkbox" checked={promo} onChange={e => setPromo(e.target.checked)} style={{ accentColor: "var(--ac)" }} /> Promo/Descuento
+            </label>
           </div>
           {items.length > 0 && (
             <>
               <div className="ti">
-                <div className="ti-r ti-h" style={{ gridTemplateColumns: "2fr 70px 90px 100px 36px" }}><span>Artículo</span><span>Cant.</span><span>Unidad</span><span>Subtotal</span><span></span></div>
+                <div className="ti-r ti-h" style={{ gridTemplateColumns: promo ? "2fr 70px 90px 90px 90px 36px" : "2fr 70px 90px 100px 36px" }}>
+                  <span>Artículo</span><span>Cant.</span><span>Unidad</span>{promo && <span>P.Unit.</span>}<span>Subtotal</span><span></span>
+                </div>
                 {items.map((it, idx) => {
                   const art = articles.find(a => a.id === it.articleId);
+                  const resolvedName = it.articleName || art?.name || "";
                   return (
-                    <div className="ti-r" key={idx} style={{ gridTemplateColumns: "2fr 70px 90px 100px 36px" }}>
+                    <div className="ti-r" key={it.articleId || idx} style={{ gridTemplateColumns: promo ? "2fr 70px 90px 90px 90px 36px" : "2fr 70px 90px 100px 36px" }}>
                       <div>
-                        <div style={{ fontWeight: 500 }}>{it.articleName}</div>
-                        <div style={{ fontSize: 11, color: "var(--ac)" }}>{money(it.unitPrice)}/{it.unit}</div>
-                        {it.quantity > it.stock && <div style={{ fontSize: 10, color: "var(--rd)" }}>⚠ Stock disponible: {it.stock}</div>}
+                        <div style={{ fontWeight: 500 }}>{resolvedName}</div>
+                        <div style={{ fontSize: 11, color: "var(--ac)" }}>
+                          {money(it.unitPrice)}/{it.unit}
+                          {promo && it.unitPrice !== it.origPrice && <span style={{ textDecoration: "line-through", color: "var(--tx3)", marginLeft: 4 }}>{money(it.origPrice)}</span>}
+                        </div>
+                        {it.quantity > (it.stock || 9999) && <div style={{ fontSize: 10, color: "var(--rd)" }}>⚠ Stock: {it.stock}</div>}
                       </div>
                       <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
                       <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>
                         {(art?.units || ["kg"]).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
                       </select>
+                      {promo && (
+                        <input className="fi" type="number" step="0.01" min="0" value={it.unitPrice} onChange={e => updItem(idx, "unitPrice", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12, background: it.unitPrice !== it.origPrice ? "var(--ywL)" : "var(--bg2)" }} />
+                      )}
                       <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
-                      <button className="btn-i" onClick={() => setItems(items.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                      <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
                     </div>
                   );
                 })}
@@ -822,9 +995,134 @@ function SaleModal({ articles, onSave, onClose }) {
         </div>
         <div className="md-f">
           <button className="btn btn-s" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-p" disabled={items.length === 0} onClick={() => onSave({ client, items, total, profit })}>Registrar Venta</button>
+          <button className="btn btn-p" disabled={items.length === 0 || !payMethod} onClick={() => {
+            const resolvedItems = items.map(({ origPrice, stock, ...rest }) => ({
+              ...rest,
+              articleName: rest.articleName || articles.find(a => a.id === rest.articleId)?.name || ""
+            }));
+            onSave({ client, payMethod, items: resolvedItems, total, profit, _editId: editData?.id || null });
+          }}>
+            {editData ? "Guardar Cambios" : "Registrar Venta"}
+          </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ============ PAYMENT METHODS ============
+function PayMethodsPage({ payMethods, refresh, notify }) {
+  const [modal, setModal] = useState(null);
+  const [delConfirm, setDelConfirm] = useState(null);
+
+  const handleSave = async (pm) => {
+    try {
+      if (pm.id) { await db.updatePayMethod(pm.id, pm); notify("Método de pago actualizado"); }
+      else { await db.insertPayMethod(pm); notify("Método de pago creado"); }
+      await refresh(); setModal(null);
+    } catch(e) { notify("Error: "+e.message); }
+  };
+
+  const handleDel = async (id) => {
+    await db.deletePayMethod(id);
+    await refresh();
+    setDelConfirm(null);
+    notify("Método de pago eliminado");
+  };
+
+  const toggleActive = async (id) => {
+    const pm = payMethods.find(p => p.id === id);
+    if (pm) { await db.updatePayMethod(id, { ...pm, active: !pm.active }); await refresh(); }
+  };
+
+  const activeCount = payMethods.filter(p => p.active).length;
+
+  return (
+    <div>
+      <div className="kpi-g">
+        <div className="kpi kpi-o"><div className="kpi-l">Total Métodos</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{payMethods.length}</div></div>
+        <div className="kpi kpi-v"><div className="kpi-l">Activos</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{activeCount}</div><div className="kpi-s">Disponibles en ventas</div></div>
+        <div className="kpi kpi-y"><div className="kpi-l">Inactivos</div><div className="kpi-val">{payMethods.length - activeCount}</div></div>
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <div />
+        <button className="btn btn-p" onClick={() => setModal({ name: "", active: true })}>{I.plus} Nuevo Método</button>
+      </div>
+
+      <div className="card"><div style={{ padding: 0 }}><div className="tw">
+        <table>
+          <thead><tr><th>Método de Pago</th><th>Estado</th><th style={{ width: 120 }}></th></tr></thead>
+          <tbody>
+            {payMethods.length === 0 ? <tr><td colSpan={3}><div className="empty"><p>No hay métodos de pago. ¡Creá el primero!</p></div></td></tr> :
+              payMethods.map(pm => (
+                <tr key={pm.id}>
+                  <td>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ color: "var(--ac)" }}>{I.creditcard}</span>
+                      <span style={{ fontWeight: 600, fontSize: 14 }}>{pm.name}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      className={`btn btn-sm ${pm.active ? "btn-p" : "btn-s"}`}
+                      style={pm.active ? { background: "var(--gn)" } : { color: "var(--tx3)" }}
+                      onClick={() => toggleActive(pm.id)}
+                    >
+                      {pm.active ? <>{I.check} Activo</> : "Inactivo"}
+                    </button>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <button className="btn-i" onClick={() => setModal({ ...pm })}>{I.edit}</button>
+                      {delConfirm === pm.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(pm.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                      ) : (
+                        <button className="btn-i" onClick={() => setDelConfirm(pm.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div></div></div>
+
+      <div style={{ marginTop: 16, padding: 16, background: "var(--bg3)", borderRadius: 10, fontSize: 12, color: "var(--tx3)" }}>
+        <strong style={{ color: "var(--tx2)" }}>Tip:</strong> Los métodos activos aparecen como opciones al registrar una venta. Podés desactivar un método sin eliminarlo para ocultarlo temporalmente.
+      </div>
+
+      {modal && (
+        <div className="mo" onClick={() => setModal(null)}>
+          <div className="md" style={{ maxWidth: 440 }} onClick={e => e.stopPropagation()}>
+            <div className="md-h"><h2>{modal.id ? "Editar" : "Nuevo"} Método de Pago</h2><button className="btn-i" onClick={() => setModal(null)}>{I.x}</button></div>
+            <div className="md-b">
+              <div className="fg">
+                <label className="fl">Nombre</label>
+                <input className="fi" value={modal.name} onChange={e => setModal({ ...modal, name: e.target.value })} placeholder="Ej: Efectivo, MercadoPago, Cuenta DNI..." />
+              </div>
+              <div className="fg">
+                <label className="fl">Estado</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className={`btn btn-sm ${modal.active ? "btn-p" : "btn-s"}`} style={modal.active ? { background: "var(--gn)" } : {}} onClick={() => setModal({ ...modal, active: true })}>
+                    {modal.active && I.check} Activo
+                  </button>
+                  <button className={`btn btn-sm ${!modal.active ? "btn-d" : "btn-s"}`} onClick={() => setModal({ ...modal, active: false })}>
+                    Inactivo
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="md-f">
+              <button className="btn btn-s" onClick={() => setModal(null)}>Cancelar</button>
+              <button className="btn btn-p" disabled={!modal.name.trim()} onClick={() => handleSave(modal)}>
+                {modal.id ? "Guardar Cambios" : "Crear Método"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -834,6 +1132,7 @@ function ExpensesPage({ expenses, refresh, notify }) {
   const [modal, setModal] = useState(null);
   const [catF, setCatF] = useState("");
   const [typeF, setTypeF] = useState("");
+  const [delConfirm, setDelConfirm] = useState(null);
   const sorted = useMemo(() => [...expenses].sort((a, b) => new Date(b.date) - new Date(a.date)), [expenses]);
   const filtered = sorted.filter(e => (!catF || e.category === catF) && (!typeF || e.type === typeF));
 
@@ -856,7 +1155,7 @@ function ExpensesPage({ expenses, refresh, notify }) {
     } catch(e) { notify("Error: "+e.message); }
   };
 
-  const handleDel = async (id) => { if (confirm("¿Eliminar este gasto?")) { await db.deleteExpense(id); await refresh(); notify("Gasto eliminado"); } };
+  const handleDel = async (id) => { await db.deleteExpense(id); await refresh(); setDelConfirm(null); notify("Gasto eliminado"); };
 
   return (
     <div>
@@ -900,7 +1199,12 @@ function ExpensesPage({ expenses, refresh, notify }) {
                   <td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(e.amount)}</td>
                   <td><div style={{ display: "flex", gap: 4 }}>
                     <button className="btn-i" onClick={() => setModal({ ...e })}>{I.edit}</button>
-                    <button className="btn-i" onClick={() => handleDel(e.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                    {delConfirm === e.id ? (
+                      <><button className="btn-i" onClick={() => handleDel(e.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                      <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                    ) : (
+                      <button className="btn-i" onClick={() => setDelConfirm(e.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                    )}
                   </div></td>
                 </tr>
               ))}
@@ -1067,7 +1371,7 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
         body: JSON.stringify({ prompt: prompts[mode], dataContext }),
       });
       const data = await resp.json();
-      setResponse(data.text || data.error || "Error");
+      setResponse(data.text || data.error || "Error al procesar");
     } catch (err) {
       console.error(err);
       setResponse("Error al conectar con el asesor IA. Intentá de nuevo en unos segundos.");
@@ -1127,7 +1431,7 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
 }
 
 // ============ REPORTS ============
-function ReportsPage({ articles, sales, purchases, expenses }) {
+function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
   const [tab, setTab] = useState("pnl");
   const [period, setPeriod] = useState("all");
 
@@ -1139,6 +1443,8 @@ function ReportsPage({ articles, sales, purchases, expenses }) {
     else if (period === "month") start.setMonth(now.getMonth() - 1);
     return arr.filter(i => new Date(i.date) >= start);
   };
+
+  const pmName = (id) => (payMethods || []).find(pm => pm.id === id)?.name || id || "Sin definir";
 
   const pS = filterP(sales), pP = filterP(purchases), pE = filterP(expenses);
   const rev = pS.reduce((a, s) => a + s.total, 0);
@@ -1156,6 +1462,16 @@ function ReportsPage({ articles, sales, purchases, expenses }) {
   pE.forEach(e => { gastoCatMap[e.category] = (gastoCatMap[e.category] || 0) + (e.amount || 0); });
   const gastoCats = Object.entries(gastoCatMap).sort((a, b) => b[1] - a[1]);
   const maxGC = gastoCats[0]?.[1] || 1;
+
+  // Payment method breakdown
+  const pmMap = {};
+  pS.forEach(s => {
+    const key = s.payMethod || "_none";
+    if (!pmMap[key]) pmMap[key] = { name: pmName(s.payMethod), total: 0, profit: 0, count: 0 };
+    pmMap[key].total += s.total; pmMap[key].profit += s.profit; pmMap[key].count++;
+  });
+  const pmBreakdown = Object.values(pmMap).sort((a, b) => b.total - a.total);
+  const maxPM = pmBreakdown[0]?.total || 1;
 
   const prodMap = {};
   pS.forEach(s => s.items.forEach(i => {
@@ -1204,11 +1520,16 @@ function ReportsPage({ articles, sales, purchases, expenses }) {
     sheets.push({ name: "P&L", rows: pnlRows });
 
     // Sales sheet
-    const salesRows = [["Fecha", "Cliente", "Artículos", "Total", "Ganancia"]];
+    const salesRows = [["Fecha", "Cliente", "Método de Pago", "Artículos", "Total", "Ganancia"]];
     [...pS].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(s => {
-      salesRows.push([fDateTime(s.date), s.client || "—", s.items.length, moneyNum(s.total), moneyNum(s.profit)]);
+      salesRows.push([fDateTime(s.date), s.client || "—", pmName(s.payMethod), s.items.length, moneyNum(s.total), moneyNum(s.profit)]);
     });
     sheets.push({ name: "Ventas", rows: salesRows });
+
+    // Payment methods breakdown
+    const pmRows = [["Método de Pago", "Ventas", "Total", "Ganancia", "% del Total"]];
+    pmBreakdown.forEach(pm => pmRows.push([pm.name, pm.count, moneyNum(pm.total), moneyNum(pm.profit), rev > 0 ? (pm.total / rev * 100).toFixed(1) + "%" : "0%"]));
+    sheets.push({ name: "Medios de Pago", rows: pmRows });
 
     // Top products
     const topRows = [["Artículo", "Ingresos", "Ganancia", "Cantidad", "Ventas"]];
@@ -1304,24 +1625,60 @@ function ReportsPage({ articles, sales, purchases, expenses }) {
       )}
 
       {tab === "sales-r" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
-          <div className="card">
-            <div className="card-h"><h3>Más Vendidos</h3></div>
-            <div className="card-b">
-              {topSell.length === 0 ? <div className="empty"><p>Sin datos</p></div> :
-                <div className="bar-c">{topSell.slice(0, 10).map((p, i) => (
-                  <div className="bar-r" key={i}><div className="bar-l" title={p.name}>{p.name}</div><div className="bar-t"><div className="bar-f ac" style={{ width: Math.max(8, (p.rev / maxR) * 100) + "%" }}></div></div><div className="bar-v">{money(p.rev)}</div></div>
-                ))}</div>}
-            </div>
+        <div>
+          {/* Payment method breakdown */}
+          <div className="kpi-g">
+            {pmBreakdown.slice(0, 4).map((pm, i) => (
+              <div key={i} className={`kpi ${i === 0 ? "kpi-o" : i === 1 ? "kpi-v" : i === 2 ? "kpi-y" : "kpi-r"}`}>
+                <div className="kpi-l">{pm.name}</div>
+                <div className="kpi-val">{money(pm.total)}</div>
+                <div className="kpi-s">{pm.count} venta(s) · {rev > 0 ? (pm.total / rev * 100).toFixed(1) : 0}%</div>
+              </div>
+            ))}
           </div>
-          <div className="card">
-            <div className="card-h"><h3>Menos Vendidos</h3></div>
-            <div className="card-b">
-              {lessS.length === 0 ? <div className="empty"><p>Sin datos</p></div> :
-                <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Veces</th><th>Total</th></tr></thead>
-                  <tbody>{lessS.slice(0, 10).map((p, i) => (
-                    <tr key={i}><td style={{ fontWeight: 500 }}>{p.name}</td><td>{p.qty}</td><td>{p.count}</td><td>{money(p.rev)}</td></tr>
-                  ))}</tbody></table>}
+
+          {pmBreakdown.length > 0 && (
+            <div className="card" style={{ marginBottom: 18 }}>
+              <div className="card-h"><h3>Ventas por Método de Pago</h3></div>
+              <div className="card-b">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--tx2)" }}>Por Monto</div>
+                    <div className="bar-c">{pmBreakdown.map((pm, i) => (
+                      <div className="bar-r" key={i}><div className="bar-l" title={pm.name}>{pm.name}</div><div className="bar-t"><div className="bar-f ac" style={{ width: Math.max(8, (pm.total / maxPM) * 100) + "%" }}></div></div><div className="bar-v">{money(pm.total)}</div></div>
+                    ))}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--tx2)" }}>Detalle</div>
+                    <table><thead><tr><th>Método</th><th>Ventas</th><th>Total</th><th>Ganancia</th><th>%</th></tr></thead>
+                      <tbody>{pmBreakdown.map((pm, i) => (
+                        <tr key={i}><td><span className="pm-badge">{pm.name}</span></td><td>{pm.count}</td><td style={{ fontWeight: 600 }}>{money(pm.total)}</td><td><span className="badge b-gn">{money(pm.profit)}</span></td><td style={{ fontSize: 12 }}>{rev > 0 ? (pm.total / rev * 100).toFixed(1) : 0}%</td></tr>
+                      ))}</tbody></table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div className="card">
+              <div className="card-h"><h3>Más Vendidos</h3></div>
+              <div className="card-b">
+                {topSell.length === 0 ? <div className="empty"><p>Sin datos</p></div> :
+                  <div className="bar-c">{topSell.slice(0, 10).map((p, i) => (
+                    <div className="bar-r" key={i}><div className="bar-l" title={p.name}>{p.name}</div><div className="bar-t"><div className="bar-f ac" style={{ width: Math.max(8, (p.rev / maxR) * 100) + "%" }}></div></div><div className="bar-v">{money(p.rev)}</div></div>
+                  ))}</div>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-h"><h3>Menos Vendidos</h3></div>
+              <div className="card-b">
+                {lessS.length === 0 ? <div className="empty"><p>Sin datos</p></div> :
+                  <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Veces</th><th>Total</th></tr></thead>
+                    <tbody>{lessS.slice(0, 10).map((p, i) => (
+                      <tr key={i}><td style={{ fontWeight: 500 }}>{p.name}</td><td>{p.qty}</td><td>{p.count}</td><td>{money(p.rev)}</td></tr>
+                    ))}</tbody></table>}
+              </div>
             </div>
           </div>
         </div>

@@ -112,6 +112,15 @@ tr:hover td{background:rgba(240,195,108,.03)}
 .ai-section{background:var(--bg3);border-radius:10px;padding:14px 16px;margin:10px 0;font-size:13px}
 .exp-dl-btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border:1px solid var(--br);border-radius:8px;background:var(--bg2);font-family:inherit;font-size:12px;font-weight:600;cursor:pointer;color:var(--gn);transition:all .15s}
 .exp-dl-btn:hover{background:var(--gnL);border-color:var(--gn)}
+.pm-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:10px;font-weight:700;letter-spacing:.3px;background:#EDE9FE;color:#7C3AED}
+.pm-chip{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:8px;border:1px solid var(--br);background:var(--bg2);cursor:pointer;font-family:inherit;font-size:13px;font-weight:500;transition:all .15s;color:var(--tx)}
+.pm-chip:hover{border-color:var(--ac);background:var(--acL)}
+.pm-chip.on{border-color:var(--ac);background:var(--acL);color:var(--ac);font-weight:600;box-shadow:0 0 0 2px rgba(191,74,42,.12)}
+.pm-grid{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.inline-create{background:var(--acL);border:1px dashed var(--ac);border-radius:10px;padding:14px 16px;margin-bottom:14px}
+.inline-create h4{font-size:12px;font-weight:700;color:var(--ac);margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px}
+.lock-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:20px;font-size:9px;font-weight:700;background:var(--bg3);color:var(--tx3);letter-spacing:.3px}
+.dup-warn{background:var(--rdL);border:1px solid #F0B8B8;border-radius:8px;padding:8px 12px;font-size:11px;color:var(--rd);margin-top:4px;display:flex;align-items:center;gap:6px}
 .alert-banner{display:flex;align-items:center;gap:10px;padding:12px 16px;border-radius:10px;margin-bottom:18px;font-size:13px;font-weight:500}
 .alert-y{background:var(--ywL);color:var(--yw);border:1px solid #E8D48A}
 .alert-r{background:var(--rdL);color:var(--rd);border:1px solid #F0B8B8}
