@@ -15,6 +15,17 @@ const EXP_TYPE = [{ value: "fijo", label: "Fijo" }, { value: "variable", label: 
 const UNITS = [{ value: "kg", label: "Kilogramo" }, { value: "g", label: "Gramo" }, { value: "und", label: "Unidad" }, { value: "lt", label: "Litro" }];
 const unitLabel = (v) => UNITS.find(u => u.value === v)?.label || v;
 const IVA_RATES = [{ value: 0, label: "0% (Exento)" }, { value: 10.5, label: "10.5%" }, { value: 21, label: "21%" }, { value: 27, label: "27%" }];
+const getPriceHistory = (articleId, purchases) => {
+  const entries = [];
+  (purchases || []).forEach(p => {
+    (p.items || []).forEach(it => {
+      if (it.articleId === articleId && it.unitCost > 0) {
+        entries.push({ date: p.date, price: it.unitCost, unit: it.unit || "kg", supplier: p.supplier, invoiceNum: p.invoiceNum });
+      }
+    });
+  });
+  return entries.sort((a, b) => new Date(a.date) - new Date(b.date));
+};
 const calcSale = (pp, iva, margin) => Math.round((pp || 0) * (1 + (iva || 0) / 100) * (1 + (margin || 0) / 100) * 100) / 100;
 
 // ============ SUPABASE DB LAYER ============
