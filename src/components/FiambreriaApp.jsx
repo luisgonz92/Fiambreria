@@ -6,6 +6,7 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const money = (n) => new Intl.NumberFormat("es-AR", { style: "currency", currency: "ARS" }).format(n || 0);
 const fDate = (d) => new Date(d).toLocaleDateString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric" });
 const fDateTime = (d) => new Date(d).toLocaleString("es-AR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+const isPrevMonth = (d) => { const now = new Date(), dt = new Date(d); return dt.getFullYear() < now.getFullYear() || (dt.getFullYear() === now.getFullYear() && dt.getMonth() < now.getMonth()); };
 
 const CATEGORIES = ["Jamones", "Quesos", "Embutidos", "Aceitunas", "Lácteos", "Bebidas", "Enlatados", "Aderezos", "Fiambres", "Snacks", "Otros"];
 const EXP_CATS = ["Alquiler", "Expensas", "Luz", "Gas", "Agua", "Internet", "Teléfono", "Sueldos", "Impuestos", "Seguros", "Mantenimiento", "Limpieza", "Transporte", "Publicidad", "Otros"];
@@ -13,38 +14,67 @@ const EXP_FREQ = [{ value: "unico", label: "Único" }, { value: "mensual", label
 const EXP_TYPE = [{ value: "fijo", label: "Fijo" }, { value: "variable", label: "Variable" }];
 const UNITS = [{ value: "kg", label: "Kilogramo" }, { value: "g", label: "Gramo" }, { value: "und", label: "Unidad" }, { value: "lt", label: "Litro" }];
 const unitLabel = (v) => UNITS.find(u => u.value === v)?.label || v;
+const IVA_RATES = [{ value: 0, label: "0% (Exento)" }, { value: 10.5, label: "10.5%" }, { value: 21, label: "21%" }, { value: 27, label: "27%" }];
+const calcSale = (pp, iva, margin) => Math.round((pp || 0) * (1 + (iva || 0) / 100) * (1 + (margin || 0) / 100) * 100) / 100;
 
-const isPrevMonth = (d) => {
-  const now = new Date(), dt = new Date(d);
-  return dt.getFullYear() < now.getFullYear() || (dt.getFullYear() === now.getFullYear() && dt.getMonth() < now.getMonth());
-};
-
-const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, category: r.category_name||r.category||'Otros' });
+// ============ SUPABASE DB LAYER ============
+const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: Number(r.iva)||21, isCorte: !!r.is_corte, category: r.category_name||r.category||'Otros' });
 const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
 const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit) })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
+const mapMerma = (r) => ({ ...r, lossValue: Number(r.loss_value)||0, items: r.items||[] });
+const mapDevol = (r) => ({ ...r, purchaseId: r.purchase_id, invoiceNum: r.invoice_num, totalValue: Number(r.total_value)||0, items: r.items||[] });
+const mapCombo = (r) => ({ ...r, suggestedPrice: Number(r.suggested_price)||0, items: r.items||[] });
 
 const db = {
+  // Articles
   async getArticles() { const { data } = await supabase.from('v_articles').select('*'); return (data||[]).map(mapArt); },
-  async insertArticle(a) { const { data: cats } = await supabase.from('categories').select('id,name'); const cat = (cats||[]).find(c => c.name === a.category); const { error } = await supabase.from('articles').insert({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5 }); if (error) throw error; },
-  async updateArticle(id, a) { const { data: cats } = await supabase.from('categories').select('id,name'); const cat = (cats||[]).find(c => c.name === a.category); await supabase.from('articles').update({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5 }).eq('id', id); },
+  async insertArticle(a) {
+    const { data: cats } = await supabase.from('categories').select('id,name');
+    const cat = (cats||[]).find(c => c.name === a.category);
+    const { error } = await supabase.from('articles').insert({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5, iva: a.iva??21, is_corte: !!a.isCorte });
+    if (error) throw error;
+  },
+  async updateArticle(id, a) {
+    const { data: cats } = await supabase.from('categories').select('id,name');
+    const cat = (cats||[]).find(c => c.name === a.category);
+    await supabase.from('articles').update({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5, iva: a.iva??21, is_corte: !!a.isCorte }).eq('id', id);
+  },
   async deleteArticle(id) { await supabase.from('articles').update({ active: false }).eq('id', id); },
+  // Purchases
   async getPurchases() { const { data } = await supabase.from('purchase_invoices').select('*, purchase_invoice_items(*)').order('date', { ascending: false }); return (data||[]).map(mapPurch); },
   async insertPurchase(p, items) { const { data: inv, error } = await supabase.from('purchase_invoices').insert({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total }).select().single(); if (error) throw error; await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: inv.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal }))); },
   async updatePurchase(id, p, items) { await supabase.from('purchase_invoice_items').delete().eq('purchase_invoice_id', id); await supabase.from('purchase_invoices').update({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total }).eq('id', id); await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal }))); },
   async deletePurchase(id) { await supabase.from('purchase_invoices').delete().eq('id', id); },
+  // Sales
   async getSales() { const { data } = await supabase.from('sale_tickets').select('*, sale_ticket_items(*)').order('date', { ascending: false }); return (data||[]).map(mapSale); },
   async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
   async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
   async deleteSale(id) { await supabase.from('sale_tickets').delete().eq('id', id); },
+  // Expenses
   async getExpenses() { const { data } = await supabase.from('expenses').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapExp); },
   async insertExpense(e) { await supabase.from('expenses').insert({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount }); },
   async updateExpense(id, e) { await supabase.from('expenses').update({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount }).eq('id', id); },
   async deleteExpense(id) { await supabase.from('expenses').update({ active: false }).eq('id', id); },
+  // Pay Methods
   async getPayMethods() { const { data } = await supabase.from('pay_methods').select('*').order('created_at'); return data||[]; },
-  async insertPayMethod(pm) { await supabase.from('pay_methods').insert({ name: pm.name, active: pm.active }); },
+  async insertPayMethod(pm) { await supabase.from('pay_methods').insert({ name: pm.name, active: pm.active !== false }); },
   async updatePayMethod(id, pm) { await supabase.from('pay_methods').update({ name: pm.name, active: pm.active }).eq('id', id); },
   async deletePayMethod(id) { await supabase.from('pay_methods').delete().eq('id', id); },
+  // Mermas
+  async getMermas() { const { data } = await supabase.from('mermas').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapMerma); },
+  async insertMerma(m) { await supabase.from('mermas').insert({ type: m.type, date: m.date, items: m.items, loss_value: m.lossValue, obs: m.obs }); },
+  async deleteMerma(id) { await supabase.from('mermas').update({ active: false }).eq('id', id); },
+  // Devoluciones
+  async getDevoluciones() { const { data } = await supabase.from('devoluciones').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapDevol); },
+  async insertDevolucion(d) { await supabase.from('devoluciones').insert({ purchase_id: d.purchaseId, supplier: d.supplier, invoice_num: d.invoiceNum, items: d.items, total_value: d.totalValue, obs: d.obs, status: 'pendiente' }); },
+  async updateDevolucionStatus(id, status) { await supabase.from('devoluciones').update({ status }).eq('id', id); },
+  async deleteDevolucion(id) { await supabase.from('devoluciones').update({ active: false }).eq('id', id); },
+  // Combos
+  async getCombos() { const { data } = await supabase.from('combos').select('*').order('created_at'); return (data||[]).map(mapCombo); },
+  async insertCombo(c) { await supabase.from('combos').insert({ name: c.name, items: c.items, suggested_price: c.suggestedPrice, active: c.active !== false }); },
+  async updateCombo(id, c) { await supabase.from('combos').update({ name: c.name, items: c.items, suggested_price: c.suggestedPrice, active: c.active }).eq('id', id); },
+  async deleteCombo(id) { await supabase.from('combos').delete().eq('id', id); },
 };
 
 const I = {
@@ -70,6 +100,9 @@ const I = {
   download: <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>,
   brain: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 2a5 5 0 015 5c0 .8-.2 1.5-.5 2.2A5 5 0 0120 14a5 5 0 01-3 4.6V22h-2v-2h-6v2H7v-3.4A5 5 0 014 14a5 5 0 013.5-4.8A5 5 0 017 7a5 5 0 015-5z"/><path d="M12 2v8"/><path d="M8 8h8"/></svg>,
   lock: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>,
+  scale: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M12 3v17M3 7l3 6c0 1.7 2 3 4 3s4-1.3 4-3l3-6"/><path d="M21 7l-3 6c0 1.7-2 3-4 3"/></svg>,
+  sandwich: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M3 11h18l-1.5 7H4.5L3 11z"/><path d="M3 11c0-4.4 4-8 9-8s9 3.6 9 8"/><path d="M6 15h12"/></svg>,
+  undo: <svg width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24"><path d="M3 7v6h6"/><path d="M3 13a9 9 0 019-9c3.3 0 6.3 1.8 7.9 4.5"/><path d="M21 17v-6h-6"/><path d="M21 11a9 9 0 01-9 9c-3.3 0-6.3-1.8-7.9-4.5"/></svg>,
 };
 
 // ============ CSS ============
@@ -84,23 +117,29 @@ export default function App() {
   const [purchases, setPurchases] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [payMethods, setPayMethods] = useState([]);
+  const [mermas, setMermas] = useState([]);
+  const [devoluciones, setDevoluciones] = useState([]);
+  const [combos, setCombos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     (async () => {
-      const [a, s, p, e, pm] = await Promise.all([db.getArticles(), db.getSales(), db.getPurchases(), db.getExpenses(), db.getPayMethods()]);
+      const [a, s, p, e, pm, m, dv, cb] = await Promise.all([db.getArticles(), db.getSales(), db.getPurchases(), db.getExpenses(), db.getPayMethods(), db.getMermas(), db.getDevoluciones(), db.getCombos()]);
       setArticles(a);
       setSales(s);
       setPurchases(p);
       setExpenses(e);
       setPayMethods(pm);
+      setMermas(m);
+      setDevoluciones(dv);
+      setCombos(cb);
       setLoading(false);
     })();
   }, []);
 
   const notify = (m) => { setToast(m); setTimeout(() => setToast(null), 3000); };
-  const refresh = useCallback(async () => { const [a,s,p,e,pm] = await Promise.all([db.getArticles(),db.getSales(),db.getPurchases(),db.getExpenses(),db.getPayMethods()]); setArticles(a);setSales(s);setPurchases(p);setExpenses(e);setPayMethods(pm); }, []);
+  const refresh = useCallback(async () => { const [a,s,p,e,pm,m,dv,cb] = await Promise.all([db.getArticles(),db.getSales(),db.getPurchases(),db.getExpenses(),db.getPayMethods(),db.getMermas(),db.getDevoluciones(),db.getCombos()]); setArticles(a);setSales(s);setPurchases(p);setExpenses(e);setPayMethods(pm);setMermas(m);setDevoluciones(dv);setCombos(cb); }, []);
 
   const nav = [
     { id: "dashboard", label: "Dashboard", icon: I.dashboard },
@@ -108,6 +147,9 @@ export default function App() {
     { id: "purchases", label: "Compras", icon: I.bag },
     { id: "sales", label: "Ventas", icon: I.cart },
     { id: "expenses", label: "Gastos", icon: I.wallet },
+    { id: "merma", label: "Merma", icon: I.scale },
+    { id: "devoluciones", label: "Devoluciones", icon: I.undo },
+    { id: "combos", label: "Combos", icon: I.sandwich },
     { id: "reports", label: "Reportes", icon: I.chart },
     { id: "paymethods", label: "Medios de Pago", icon: I.creditcard },
     { id: "advisor", label: "Asesor IA", icon: I.brain },
@@ -146,7 +188,7 @@ export default function App() {
               </div>
             ))}
           </nav>
-          <div className="side-ft">v3.3 · Datos compartidos</div>
+          <div className="side-ft">v5.4 · Datos compartidos</div>
         </aside>
 
         <main className="main">
@@ -158,12 +200,43 @@ export default function App() {
             <span style={{ fontSize: 12, color: "var(--tx3)" }}>{fDate(new Date())}</span>
           </header>
           <div className="page">
-            {pg === "dashboard" && <Dashboard articles={articles} sales={sales} purchases={purchases} expenses={expenses} setPg={setPg} lowStock={lowStock} outStock={outStock} />}
-            {pg === "inventory" && <InventoryPage articles={articles} refresh={refresh} notify={notify} />}
-            {pg === "purchases" && <PurchasesPage articles={articles} purchases={purchases} refresh={refresh} notify={notify} />}
-            {pg === "sales" && <SalesPage articles={articles} sales={sales} refresh={refresh} payMethods={payMethods} notify={notify} />}
+            {pg === "dashboard" && <Dashboard articles={articles} sales={sales} purchases={purchases} expenses={expenses} mermas={mermas} devoluciones={devoluciones} setPg={setPg} lowStock={lowStock} outStock={outStock} />}
+            {pg === "inventory" && <InventoryPage articles={articles} purchases={purchases} refresh={refresh} notify={notify} />}
+            {pg === "purchases" && <PurchasesPage articles={articles} purchases={purchases} refresh={refresh} devoluciones={devoluciones} notify={notify} />}
+            {pg === "sales" && <SalesPage articles={articles} sales={sales} refresh={refresh} payMethods={payMethods} combos={combos} notify={notify} />}
             {pg === "expenses" && <ExpensesPage expenses={expenses} refresh={refresh} notify={notify} />}
-            {pg === "reports" && <ReportsPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} payMethods={payMethods} />}
+            {pg === "merma" && <MermaPage articles={articles} mermas={mermas} refresh={refresh} notify={notify} />}
+            {pg === "devoluciones" && <DevolucionesPage articles={articles} purchases={purchases} devoluciones={devoluciones}
+              onSave={async (dev) => {
+                // Stock deduction at App level - guaranteed fresh articles
+                const upd = articles.map(a => {
+                  const di = (dev.items || []).find(i => i.articleId === a.id);
+                  return di ? { ...a, stock: Math.max(0, (a.stock || 0) - (di.devQty || 0)) } : a;
+                });
+                await db.insertDevolucion(dev);
+                await refresh();
+                notify(`Devolución registrada · Stock descontado`);
+              }}
+              onDelete={async (id) => {
+                const d = devoluciones.find(x => x.id === id);
+                if (!d) return;
+                if (isPrevMonth(d.date)) { notify("⚠ Período cerrado"); return false; }
+                const upd = articles.map(a => {
+                  const di = (d.items || []).find(i => i.articleId === a.id);
+                  return di ? { ...a, stock: (a.stock || 0) + (di.devQty || 0) } : a;
+                });
+                await db.deleteDevolucion(id);
+                await refresh();
+                notify("Devolución eliminada · Stock revertido");
+                return true;
+              }}
+              onStatusChange={async (id, status) => {
+                await db.updateDevolucionStatus(id, status); await refresh();
+                notify("Estado actualizado");
+              }}
+              notify={notify} />}
+            {pg === "combos" && <CombosPage articles={articles} combos={combos} refresh={refresh} notify={notify} />}
+            {pg === "reports" && <ReportsPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} mermas={mermas} devoluciones={devoluciones} payMethods={payMethods} />}
             {pg === "paymethods" && <PayMethodsPage payMethods={payMethods} refresh={refresh} notify={notify} />}
             {pg === "advisor" && <AIAdvisorPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} />}
           </div>
@@ -175,7 +248,7 @@ export default function App() {
 }
 
 // ============ DASHBOARD ============
-function Dashboard({ articles, sales, purchases, expenses, setPg, lowStock, outStock }) {
+function Dashboard({ articles, sales, purchases, expenses, mermas, devoluciones, setPg, lowStock, outStock }) {
   const today = new Date().toDateString();
   const tSales = sales.filter(s => new Date(s.date).toDateString() === today);
   const tRev = tSales.reduce((a, s) => a + s.total, 0);
@@ -184,7 +257,9 @@ function Dashboard({ articles, sales, purchases, expenses, setPg, lowStock, outS
   const allProfit = sales.reduce((a, s) => a + s.profit, 0);
   const allExpense = purchases.reduce((a, p) => a + p.total, 0);
   const allGastos = expenses.reduce((a, e) => a + (e.amount || 0), 0);
-  const netResult = allProfit - allGastos;
+  const allMermaLoss = (mermas || []).reduce((a, m) => a + (m.lossValue || 0), 0);
+  const allDevolCred = (devoluciones || []).filter(d => d.status === "credito").reduce((a, d) => a + (d.totalValue || 0), 0);
+  const netResult = allProfit - allGastos - allMermaLoss + allDevolCred;
   const recent5 = [...sales].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
   const recentP = [...purchases].sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
 
@@ -203,8 +278,8 @@ function Dashboard({ articles, sales, purchases, expenses, setPg, lowStock, outS
       <div className="kpi-g">
         <div className="kpi kpi-o"><div className="kpi-l">Ventas Hoy</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{money(tRev)}</div><div className="kpi-s">{tSales.length} ticket(s)</div></div>
         <div className="kpi kpi-v"><div className="kpi-l">Ganancia Bruta</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(allProfit)}</div><div className="kpi-s">de {money(allRev)} en ventas</div></div>
-        <div className="kpi kpi-r"><div className="kpi-l">Gastos Operativos</div><div className="kpi-val" style={{ color: "var(--rd)" }}>{money(allGastos)}</div><div className="kpi-s">{expenses.length} gastos registrados</div></div>
-        <div className={`kpi ${netResult >= 0 ? "kpi-v" : "kpi-r"}`}><div className="kpi-l">Resultado Neto</div><div className="kpi-val" style={{ color: netResult >= 0 ? "var(--gn)" : "var(--rd)" }}>{money(netResult)}</div><div className="kpi-s">Bruta - Gastos</div></div>
+        <div className="kpi kpi-r"><div className="kpi-l">Gastos + Merma</div><div className="kpi-val" style={{ color: "var(--rd)" }}>{money(allGastos + allMermaLoss)}</div><div className="kpi-s">Gastos: {money(allGastos)} · Merma: {money(allMermaLoss)}</div></div>
+        <div className={`kpi ${netResult >= 0 ? "kpi-v" : "kpi-r"}`}><div className="kpi-l">Resultado Neto</div><div className="kpi-val" style={{ color: netResult >= 0 ? "var(--gn)" : "var(--rd)" }}>{money(netResult)}</div><div className="kpi-s">Bruta - Gastos - Merma{allDevolCred > 0 ? ` + Créditos ${money(allDevolCred)}` : ""}</div></div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
         <div className="card">
@@ -237,7 +312,7 @@ function Dashboard({ articles, sales, purchases, expenses, setPg, lowStock, outS
 }
 
 // ============ INVENTORY (ARTICLES) ============
-function InventoryPage({ articles, refresh, notify }) {
+function InventoryPage({ articles, purchases, refresh, notify }) {
   const [modal, setModal] = useState(null);
   const [search, setSearch] = useState("");
   const [catF, setCatF] = useState("");
@@ -256,7 +331,7 @@ function InventoryPage({ articles, refresh, notify }) {
   const totalVal = articles.reduce((s, a) => s + (a.stock * (a.salePrice || 0)), 0);
   const totalCost = articles.reduce((s, a) => s + (a.stock * (a.purchasePrice || 0)), 0);
 
-  const blank = { name: "", category: "Otros", units: ["kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 };
+  const blank = { name: "", category: "Otros", units: ["kg"], iva: 21, marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0, isCorte: false };
 
   const [delConfirm, setDelConfirm] = useState(null);
 
@@ -270,7 +345,7 @@ function InventoryPage({ articles, refresh, notify }) {
     } catch(e) { notify("Error: "+e.message); }
   };
 
-  const handleDel = async (id) => { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); setDelConfirm(null); };
+  const handleDel = (id) => { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); setDelConfirm(null); };
 
   const stockStatus = (a) => {
     if (a.stock <= 0 && a.purchasePrice > 0) return "out";
@@ -301,17 +376,17 @@ function InventoryPage({ articles, refresh, notify }) {
       <div className="card">
         <div style={{ padding: 0 }}><div className="tw">
           <table>
-            <thead><tr><th>Artículo</th><th>Categoría</th><th>Unidades</th><th>P. Compra</th><th>Margen</th><th>P. Venta</th><th>Stock</th><th>Estado</th><th style={{ width: 80 }}></th></tr></thead>
+            <thead><tr><th>Artículo</th><th>Categoría</th><th>P. Compra</th><th>IVA</th><th>Margen</th><th>P. Venta</th><th>Stock</th><th>Estado</th><th style={{ width: 80 }}></th></tr></thead>
             <tbody>
               {filtered.length === 0 ? <tr><td colSpan={9}><div className="empty"><p>No hay artículos{search ? " para esta búsqueda" : ". ¡Creá el primero!"}</p></div></td></tr> :
                 filtered.map(a => {
                   const st = stockStatus(a);
                   return (
                     <tr key={a.id}>
-                      <td style={{ fontWeight: 600 }}>{a.name}</td>
+                      <td style={{ fontWeight: 600 }}>{a.name} {a.isCorte && <span style={{ display: "inline-flex", padding: "2px 6px", borderRadius: 10, fontSize: 9, fontWeight: 700, background: "#EDE9FE", color: "#7C3AED", marginLeft: 4, verticalAlign: "middle" }}>Corte</span>}</td>
                       <td><span className="badge b-ac">{a.category}</span></td>
-                      <td style={{ fontSize: 12 }}>{(a.units || []).map(unitLabel).join(", ")}</td>
                       <td>{a.purchasePrice ? money(a.purchasePrice) : <span style={{ color: "var(--tx3)", fontSize: 11 }}>Pendiente</span>}</td>
+                      <td><span className="badge b-yw">{a.iva ?? 21}%</span></td>
                       <td><span className="badge b-gn">{a.marginPercent}%</span></td>
                       <td style={{ fontWeight: 600, color: "var(--ac)" }}>{a.salePrice ? money(a.salePrice) : "—"}</td>
                       <td style={{ fontWeight: 600 }}>{a.stock} {(a.units || [])[0] || ""}</td>
@@ -342,26 +417,21 @@ function InventoryPage({ articles, refresh, notify }) {
         </div></div>
       </div>
 
-      {modal && <ArticleModal art={modal} articles={articles} onSave={handleSave} onClose={() => setModal(null)} />}
+      {modal && <ArticleModal art={modal} articles={articles} purchases={purchases} onSave={handleSave} onClose={() => setModal(null)} />}
     </div>
   );
 }
 
-function ArticleModal({ art, articles, onSave, onClose }) {
-  const [f, setF] = useState({ ...art, units: art.units || ["kg"] });
-  const [priceMode, setPriceMode] = useState("margin"); // "margin" or "sale"
-
-  const calcSalePrice = (pp, mp) => Math.round((pp || 0) * (1 + (mp || 0) / 100) * 100) / 100;
-  const calcMargin = (pp, sp) => pp > 0 ? Math.round(((sp - pp) / pp) * 100 * 10) / 10 : 0;
+function ArticleModal({ art, articles, purchases, onSave, onClose }) {
+  const [f, setF] = useState({ ...art, units: art.units || ["kg"], iva: art.iva ?? 21 });
 
   const set = (k, v) => {
     const upd = { ...f, [k]: v };
-    if (k === "purchasePrice") {
-      upd.salePrice = calcSalePrice(v, upd.marginPercent);
-    } else if (k === "marginPercent") {
-      upd.salePrice = calcSalePrice(upd.purchasePrice, v);
+    if (k === "purchasePrice" || k === "iva" || k === "marginPercent") {
+      upd.salePrice = calcSale(upd.purchasePrice, upd.iva, upd.marginPercent);
     } else if (k === "salePrice") {
-      upd.marginPercent = calcMargin(upd.purchasePrice, v);
+      const base = (upd.purchasePrice || 0) * (1 + (upd.iva || 0) / 100);
+      upd.marginPercent = base > 0 ? Math.round(((v / base) - 1) * 100 * 10) / 10 : 0;
     }
     setF(upd);
   };
@@ -372,6 +442,14 @@ function ArticleModal({ art, articles, onSave, onClose }) {
   };
 
   const isDup = f.name.trim() && articles.some(a => a.id !== f.id && a.name.trim().toLowerCase() === f.name.trim().toLowerCase());
+  const priceWithIva = (f.purchasePrice || 0) * (1 + (f.iva || 0) / 100);
+
+  // Price history
+  const history = f.id ? getPriceHistory(f.id, purchases) : [];
+  const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+  const prevEntry = history.length > 1 ? history[history.length - 2] : null;
+  const priceDiff = lastEntry && prevEntry ? lastEntry.price - prevEntry.price : 0;
+  const pricePct = prevEntry && prevEntry.price > 0 ? ((priceDiff / prevEntry.price) * 100) : 0;
 
   return (
     <div className="mo" onClick={onClose}>
@@ -381,7 +459,7 @@ function ArticleModal({ art, articles, onSave, onClose }) {
           <div className="fg">
             <label className="fl">Nombre del Artículo</label>
             <input className="fi" value={f.name} onChange={e => set("name", e.target.value)} placeholder="Ej: Jamón Crudo Paladini" />
-            {isDup && <div className="dup-warn">{I.warn} Ya existe un artículo con este nombre. No se podrá guardar duplicado.</div>}
+            {isDup && <div className="dup-warn">{I.warn} Ya existe un artículo con este nombre.</div>}
           </div>
           <div className="fr">
             <div className="fg">
@@ -389,7 +467,7 @@ function ArticleModal({ art, articles, onSave, onClose }) {
               <select className="fs" value={f.category} onChange={e => set("category", e.target.value)}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
             </div>
             <div className="fg">
-              <label className="fl">Unidades de Medida (múltiples)</label>
+              <label className="fl">Unidades de Medida</label>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {UNITS.map(u => (
                   <button key={u.value} type="button" className={`btn btn-sm ${f.units.includes(u.value) ? "btn-p" : "btn-s"}`} onClick={() => toggleUnit(u.value)}>
@@ -399,27 +477,66 @@ function ArticleModal({ art, articles, onSave, onClose }) {
               </div>
             </div>
           </div>
-          <div className="fr3">
+          <div className="fr">
             <div className="fg">
-              <label className="fl">Precio Compra</label>
+              <label className="fl">Precio Compra (sin IVA)</label>
               <input className="fi" type="number" step="0.01" min="0" value={f.purchasePrice || ""} onChange={e => set("purchasePrice", parseFloat(e.target.value) || 0)} placeholder="0.00" />
-              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Editable · Se actualiza con facturas de compra</span>
             </div>
             <div className="fg">
-              <label className="fl">Margen Ganancia (%)</label>
+              <label className="fl">IVA (%)</label>
+              <select className="fs" value={f.iva ?? 21} onChange={e => set("iva", parseFloat(e.target.value))}>
+                {IVA_RATES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
+              {f.purchasePrice > 0 && <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Con IVA: {money(priceWithIva)}</span>}
+            </div>
+          </div>
+
+          {/* PRICE HISTORY */}
+          {history.length > 0 && (
+            <div style={{ background: "var(--bg3)", borderRadius: 10, padding: "10px 14px", margin: "6px 0 10px" }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: .5, marginBottom: 6 }}>Historial de Precios de Compra</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div><span style={{ fontSize: 10, color: "var(--tx3)" }}>Precio actual</span><div style={{ fontWeight: 700, fontSize: 15 }}>{money(lastEntry.price)}<span style={{ fontSize: 10, color: "var(--tx3)", fontWeight: 400 }}>/{lastEntry.unit}</span></div><span style={{ fontSize: 10, color: "var(--tx3)" }}>{fDate(lastEntry.date)} · {lastEntry.supplier}</span></div>
+                {prevEntry && (
+                  <div><span style={{ fontSize: 10, color: "var(--tx3)" }}>Precio anterior</span><div style={{ fontWeight: 600, fontSize: 14, color: "var(--tx2)" }}>{money(prevEntry.price)}<span style={{ fontSize: 10, color: "var(--tx3)", fontWeight: 400 }}>/{prevEntry.unit}</span></div><span style={{ fontSize: 10, color: "var(--tx3)" }}>{fDate(prevEntry.date)} · {prevEntry.supplier}</span></div>
+                )}
+              </div>
+              {prevEntry && (
+                <div style={{ display: "flex", gap: 12, marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--br)" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: priceDiff > 0 ? "var(--rd)" : priceDiff < 0 ? "var(--gn)" : "var(--tx3)" }}>
+                    {priceDiff > 0 ? "▲" : priceDiff < 0 ? "▼" : "="} {money(Math.abs(priceDiff))} ({priceDiff >= 0 ? "+" : ""}{pricePct.toFixed(1)}%)
+                  </span>
+                  <span style={{ fontSize: 11, color: "var(--tx3)" }}>{history.length} compras registradas</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="fr3">
+            <div className="fg">
+              <label className="fl">Margen (%)</label>
               <input className="fi" type="number" step="0.1" min="0" value={f.marginPercent} onChange={e => set("marginPercent", parseFloat(e.target.value) || 0)} />
-              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Editar margen recalcula P.Venta</span>
+              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Sobre P.Compra + IVA</span>
             </div>
             <div className="fg">
               <label className="fl">Precio Venta</label>
               <input className="fi" type="number" step="0.01" min="0" value={f.salePrice || ""} onChange={e => set("salePrice", parseFloat(e.target.value) || 0)} placeholder="0.00" />
-              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>Editar precio recalcula margen</span>
+              <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, display: "block" }}>= (P.Compra + IVA) + {f.marginPercent}%</span>
+            </div>
+            <div className="fg">
+              <label className="fl">Ganancia Unit.</label>
+              <input className="fi" readOnly value={f.salePrice > 0 ? money(f.salePrice - priceWithIva) : "—"} style={{ background: "var(--gnL)", color: "var(--gn)", fontWeight: 600 }} />
             </div>
           </div>
           <div className="fr">
-            <div className="fg"><label className="fl">Stock Actual</label><input className="fi" type="number" step="0.01" min="0" value={f.stock} onChange={e => setF(p => ({ ...p, stock: parseFloat(e.target.value) || 0 }))} /><span style={{ fontSize: 10, color: "var(--tx3)", display: "block", marginTop: 2 }}>Ajustable manualmente · Se actualiza con compras y ventas</span></div>
-            <div className="fg"><label className="fl">Stock Mínimo (alerta)</label><input className="fi" type="number" step="0.01" min="0" value={f.minStock || 5} onChange={e => setF(p => ({ ...p, minStock: parseFloat(e.target.value) || 0 }))} /></div>
+            <div className="fg"><label className="fl">Stock Actual</label><input className="fi" type="number" step="0.01" min="0" value={f.stock} onChange={e => setF(p => ({ ...p, stock: parseFloat(e.target.value) || 0 }))} /><span style={{ fontSize: 10, color: "var(--tx3)", display: "block", marginTop: 2 }}>Ajustable manualmente</span></div>
+            <div className="fg"><label className="fl">Stock Mínimo</label><input className="fi" type="number" step="0.01" min="0" value={f.minStock || 5} onChange={e => setF(p => ({ ...p, minStock: parseFloat(e.target.value) || 0 }))} /></div>
           </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "10px 0 4px", fontSize: 13, fontWeight: 500, color: f.isCorte ? "var(--ac)" : "var(--tx2)" }}>
+            <input type="checkbox" checked={!!f.isCorte} onChange={e => setF(p => ({ ...p, isCorte: e.target.checked }))} style={{ accentColor: "var(--ac)", width: 16, height: 16 }} />
+            ¿Es artículo de corte?
+            <span style={{ fontSize: 10, fontWeight: 400, color: "var(--tx3)" }}>Aparece en el cierre diario de merma</span>
+          </label>
         </div>
         <div className="md-f">
           <button className="btn btn-s" onClick={onClose}>Cancelar</button>
@@ -433,7 +550,7 @@ function ArticleModal({ art, articles, onSave, onClose }) {
 }
 
 // ============ PURCHASES ============
-function PurchasesPage({ articles, purchases, refresh, notify }) {
+function PurchasesPage({ articles, purchases, refresh, devoluciones, notify }) {
   const [modal, setModal] = useState(false);
   const [editPurch, setEditPurch] = useState(null);
   const [view, setView] = useState(null);
@@ -441,19 +558,24 @@ function PurchasesPage({ articles, purchases, refresh, notify }) {
   const sorted = useMemo(() => [...purchases].sort((a, b) => new Date(b.date) - new Date(a.date)), [purchases]);
 
   const handleSave = async (data) => {
-    const { _newArticles: newArts, _editId, ...purchaseData } = data;
     try {
+      const { _newArticles: newArts, _editId, _devolucionId, ...purchaseData } = data;
       for (const art of (newArts||[])) { try { await db.insertArticle(art); } catch(e) { console.error(e); } }
       if (_editId) {
         await db.updatePurchase(_editId, purchaseData, purchaseData.items);
         notify("Compra actualizada");
       } else {
         await db.insertPurchase(purchaseData, purchaseData.items);
-        notify("Compra registrada: " + money(purchaseData.total));
+        if (_devolucionId) { await db.updateDevolucionStatus(_devolucionId, "repuesto"); }
+        notify(purchaseData.isReposition ? "Reposición registrada" : "Compra registrada: " + money(purchaseData.total));
       }
       await refresh();
-    } catch(e) { notify("Error: "+e.message); }
-    setModal(false); setEditPurch(null);
+      setModal(false);
+      setEditPurch(null);
+    } catch (err) {
+      console.error("Error en handleSave compra:", err);
+      notify("⚠ Error al guardar: " + (err.message || "desconocido"));
+    }
   };
 
   const handleDel = async (id) => {
@@ -466,548 +588,467 @@ function PurchasesPage({ articles, purchases, refresh, notify }) {
     notify("Compra eliminada · Stock revertido");
   };
 
-  const openEdit = (p) => {
-    if (isPrevMonth(p.date)) { notify("⚠ No se puede editar: período cerrado"); return; }
-    setEditPurch(p);
-    setModal(true);
-  };
+  const totalPend = sorted.filter(d => d.status === "pendiente").reduce((s, d) => s + (d.totalValue || 0), 0);
+  const totalCred = sorted.filter(d => d.status === "credito").reduce((s, d) => s + (d.totalValue || 0), 0);
+  const totalRep = sorted.filter(d => d.status === "repuesto").reduce((s, d) => s + (d.totalValue || 0), 0);
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
-        <div />
-        <button className="btn btn-p" onClick={() => { setEditPurch(null); setModal(true); }}>{I.plus} Nueva Compra</button>
+      <div className="kpi-g">
+        <div className="kpi kpi-o"><div className="kpi-l">Total Devoluciones</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{devoluciones.length}</div><div className="kpi-s">{money(totalPend + totalCred + totalRep)}</div></div>
+        <div className="kpi kpi-y"><div className="kpi-l">Pendientes</div><div className="kpi-val">{money(totalPend)}</div><div className="kpi-s">{sorted.filter(d => d.status === "pendiente").length} · Monto suspendido</div></div>
+        <div className="kpi kpi-v"><div className="kpi-l">Con Crédito</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(totalCred)}</div><div className="kpi-s">Reduce costo compras</div></div>
+        <div className="kpi kpi-r"><div className="kpi-l">Repuestos</div><div className="kpi-val">{money(totalRep)}</div><div className="kpi-s">{sorted.filter(d => d.status === "repuesto").length} reposiciones</div></div>
       </div>
-      <div className="card"><div style={{ padding: 0 }}><div className="tw">
-        <table>
-          <thead><tr><th>#</th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Total</th><th style={{ width: 110 }}></th></tr></thead>
-          <tbody>
-            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay compras. Registrá tu primera factura.</p></div></td></tr> :
-              sorted.map((p, i) => (
-                <tr key={p.id}>
-                  <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{sorted.length - i}</td>
-                  <td style={{ fontSize: 12 }}>{fDateTime(p.date)}</td>
-                  <td style={{ fontWeight: 500 }}>{p.supplier}</td>
-                  <td>{p.invoiceNum || "—"}</td>
-                  <td>{p.items.length}</td>
-                  <td style={{ fontWeight: 600 }}>{money(p.total)}</td>
-                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    <button className="btn-i" onClick={() => setView(p)}>{I.eye}</button>
-                    {isPrevMonth(p.date) ? <span className="lock-badge">{I.lock} Cerrado</span> : (<>
-                      <button className="btn-i" onClick={() => openEdit(p)}>{I.edit}</button>
-                      {delConfirm === p.id ? (
-                        <><button className="btn-i" onClick={() => handleDel(p.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
-                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
-                      ) : (
-                        <button className="btn-i" onClick={() => setDelConfirm(p.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
-                      )}
-                    </>)}
-                  </div></td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </div></div></div>
 
-      {modal && <PurchaseModal articles={articles} editData={editPurch} onSave={handleSave} onClose={() => { setModal(false); setEditPurch(null); }} />}
-      {view && (
-        <div className="mo" onClick={() => setView(null)}>
-          <div className="md" onClick={e => e.stopPropagation()}>
-            <div className="md-h"><h2>Detalle de Compra</h2><button className="btn-i" onClick={() => setView(null)}>{I.x}</button></div>
-            <div className="md-b">
-              <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 13, color: "var(--tx2)", flexWrap: "wrap" }}>
-                <span>Fecha: <strong>{fDateTime(view.date)}</strong></span>
-                <span>Proveedor: <strong>{view.supplier}</strong></span>
-                <span>Factura: <strong>{view.invoiceNum || "—"}</strong></span>
-              </div>
-              <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Unidad</th><th>Costo Unit.</th><th>Subtotal</th></tr></thead>
-                <tbody>{view.items.map((it, i) => (
-                  <tr key={i}><td style={{ fontWeight: 500 }}>{it.articleName}</td><td>{it.quantity}</td><td>{unitLabel(it.unit)}</td><td>{money(it.unitCost)}</td><td style={{ fontWeight: 600 }}>{money(it.subtotal)}</td></tr>
-                ))}</tbody></table>
-              <div className="tt" style={{ marginTop: 14 }}><span className="tt-l">Total Compra</span><span className="tt-v">{money(view.total)}</span></div>
+      {!showForm && (
+        <div style={{ marginBottom: 18 }}>
+          <label className="fl">Seleccioná una factura de compra para devolver</label>
+          <div style={{ display: "flex", gap: 10, marginTop: 6, marginBottom: 8, flexWrap: "wrap" }}>
+            <input className="fi" placeholder="Buscar por proveedor o nº factura..." value={facSearch} onChange={e => setFacSearch(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
+            <select className="fs" style={{ width: "auto" }} value={provFilter} onChange={e => setProvFilter(e.target.value)}>
+              <option value="">Todos los proveedores</option>
+              {[...new Set(purchases.map(p => p.supplier))].sort().map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "grid", gap: 8, maxHeight: 300, overflowY: "auto" }}>
+            {purchases.length === 0 ? <div className="empty"><p>No hay compras registradas</p></div> :
+              [...purchases]
+                .filter(p => (!provFilter || p.supplier === provFilter) && (!facSearch || (p.supplier || "").toLowerCase().includes(facSearch.toLowerCase()) || (p.invoiceNum || "").toLowerCase().includes(facSearch.toLowerCase())))
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .map(p => (
+                <div key={p.id} onClick={() => initDev(p)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--br)", cursor: "pointer", transition: "all .15s", fontSize: 13 }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ac)"} onMouseLeave={e => e.currentTarget.style.borderColor = "var(--br)"}>
+                  <div><span style={{ fontWeight: 600 }}>{p.supplier}</span> <span style={{ color: "var(--tx3)", fontSize: 11 }}>· {p.invoiceNum || "S/N"} · {fDate(p.date)}</span></div>
+                  <span style={{ fontWeight: 600 }}>{money(p.total)}</span>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {showForm && selPurch && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="card-h"><h3>Devolver de: {selPurch.supplier} · {selPurch.invoiceNum || "S/N"}</h3><button className="btn-i" onClick={() => setShowForm(false)}>{I.x}</button></div>
+          <div className="card-b">
+            <div className="merma-grid">
+              <div className="merma-row merma-row-h" style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px" }}><span></span><span>Artículo</span><span>Stock</span><span>Comprado</span><span>Devolver</span><span>Valor</span></div>
+              {devItems.map((it, idx) => {
+                const currentArt = articles.find(a => a.id === it.articleId);
+                const currentStock = currentArt?.stock ?? 0;
+                return (
+                <div className="merma-row" key={idx} style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px", opacity: it.selected ? 1 : 0.5 }}>
+                  <input type="checkbox" checked={it.selected} onChange={() => toggleItem(idx)} style={{ accentColor: "var(--ac)" }} />
+                  <span style={{ fontWeight: 500 }}>{it.articleName}</span>
+                  <span style={{ fontSize: 11, color: currentStock <= 0 ? "var(--rd)" : "var(--gn)", fontWeight: 600 }}>{currentStock.toFixed(2)}</span>
+                  <span style={{ fontSize: 12 }}>{it.quantity} {it.unit}</span>
+                  <input className="fi" type="number" step="0.01" min="0.01" max={Math.min(it.quantity, currentStock)} value={it.devQty || ""} onChange={e => updDevQty(idx, Math.min(it.quantity, currentStock, parseFloat(e.target.value) || 0))} disabled={!it.selected} style={{ padding: "4px 7px", fontSize: 12 }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--rd)" }}>{it.selected && it.devQty > 0 ? money(it.devQty * (it.unitCost || 0)) : "—"}</span>
+                </div>);
+              })}
+            </div>
+            <div className="fg" style={{ marginTop: 10 }}><label className="fl">Observaciones</label><input className="fi" value={devObs} onChange={e => setDevObs(e.target.value)} placeholder="Motivo de devolución (opcional)" /></div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
+              <button className="btn btn-s" onClick={() => setShowForm(false)}>Cancelar</button>
+              <button className="btn btn-p" onClick={saveDev}>Registrar Devolución</button>
             </div>
           </div>
         </div>
       )}
+
+      {/* LIST */}
+      <div className="card"><div style={{ padding: 0 }}><div className="tw">
+        <table>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Valor</th><th>Estado</th><th style={{ width: 80 }}></th></tr></thead>
+          <tbody>
+            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay devoluciones registradas</p></div></td></tr> :
+              sorted.map(d => {
+                const linkedPurch = purchases.find(p => p.devolucionId === d.id);
+                return (
+                <tr key={d.id}>
+                  <td style={{ fontSize: 12 }}>{fDateTime(d.date)}</td>
+                  <td style={{ fontWeight: 500 }}>{d.supplier}</td>
+                  <td>{d.invoiceNum || "—"}</td>
+                  <td style={{ fontSize: 11 }}>
+                    {(d.items || []).map(it => `${it.articleName} (${it.devQty})`).join(", ")}
+                    {linkedPurch && (
+                      <div style={{ fontSize: 10, color: "#7C3AED", marginTop: 2 }}>🔗 Repuesta con compra del {fDate(linkedPurch.date)}</div>
+                    )}
+                  </td>
+                  <td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(d.totalValue)}</td>
+                  <td>
+                    {statusEdit === d.id ? (
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {STATUSES.map(st => (
+                          <button key={st.value} className={`btn btn-sm ${d.status === st.value ? "btn-p" : "btn-s"}`} onClick={() => { onStatusChange(d.id, st.value); setStatusEdit(null); }} style={{ padding: "3px 8px", fontSize: 10 }}>{st.label}</button>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className={`badge ${STATUSES.find(st => st.value === d.status)?.css || "b-yw"}`} onClick={() => !linkedPurch ? setStatusEdit(d.id) : null} style={{ cursor: linkedPurch ? "default" : "pointer" }}>
+                        {STATUSES.find(st => st.value === d.status)?.label || d.status}
+                      </span>
+                    )}
+                  </td>
+                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    {isPrevMonth(d.date) ? <span className="lock-badge">{I.lock}</span> :
+                      delConfirm === d.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(d.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                      ) : (<button className="btn-i" onClick={() => setDelConfirm(d.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>)}
+                  </div></td>
+                </tr>);
+              })}
+          </tbody>
+        </table>
+      </div></div></div>
+
+      <div style={{ marginTop: 16, padding: 16, background: "var(--bg3)", borderRadius: 10, fontSize: 12, color: "var(--tx3)" }}>
+        <strong style={{ color: "var(--tx2)" }}>Impacto financiero:</strong> Las devoluciones "Pendientes" quedan como monto suspendido. Las "Con Crédito" reducen el costo de compras del período. Las "Repuestas" se cargan como compra nueva vinculada en el módulo de Compras.
+      </div>
     </div>
   );
 }
 
-function PurchaseModal({ articles, editData, onSave, onClose }) {
-  const [supplier, setSupplier] = useState(editData?.supplier || "");
-  const [invoiceNum, setInvoiceNum] = useState(editData?.invoiceNum || "");
-  const [items, setItems] = useState(editData ? editData.items.map(it => ({ ...it, _key: uid() })) : []);
-  const [q, setQ] = useState("");
-  const [showDD, setShowDD] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [scanPreview, setScanPreview] = useState(null);
-  const [scanMsg, setScanMsg] = useState(null);
-  const [newArticles, setNewArticles] = useState([]);
-  const [dragging, setDragging] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newArt, setNewArt] = useState({ name: "", category: "Otros", units: ["kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 });
-  const [linkIdx, setLinkIdx] = useState(-1);
-  const [linkQ, setLinkQ] = useState("");
+// ============ MERMA ============
+function MermaPage({ articles, mermas, refresh, notify }) {
+  const [tab, setTab] = useState("corte");
+  const [delConfirm, setDelConfirm] = useState(null);
+  const corteArts = articles.filter(a => a.isCorte);
+  const sorted = useMemo(() => [...mermas].sort((a, b) => new Date(b.date) - new Date(a.date)), [mermas]);
 
-  const allArticles = useMemo(() => [...articles, ...newArticles], [articles, newArticles]);
-  const avail = q ? allArticles.filter(a => (a.name || "").toLowerCase().includes(q.toLowerCase()) && !items.find(i => i.articleId === a.id)) : [];
+  const totalPerdida = mermas.reduce((s, m) => s + (m.lossValue || 0), 0);
+  const totalAprov = mermas.filter(m => m.type === "corte").reduce((s, m) => s + (m.items || []).reduce((a, it) => a + (it.aprovQty || 0) * (it.costPrice || 0), 0), 0);
+  const countCorte = mermas.filter(m => m.type === "corte").length;
+  const countVenc = mermas.filter(m => m.type === "vencimiento").length;
 
-  const addExisting = (id, name, units, price) => {
-    setItems(prev => [...prev, { _key: uid(), articleId: id, articleName: name, unit: (units || ["kg"])[0], quantity: 1, unitCost: price || 0, subtotal: price || 0, isNew: false }]);
-    setQ(""); setShowDD(false);
+  // Corte form state
+  const [corteDate, setCorteDate] = useState(new Date().toISOString().slice(0, 10));
+  const [corteItems, setCorteItems] = useState([]);
+  const [corteObs, setCorteObs] = useState("");
+  const [showCorteForm, setShowCorteForm] = useState(false);
+
+  const initCorte = () => {
+    setCorteItems(corteArts.map(a => ({ articleId: a.id, articleName: a.name, lostQty: 0, aprovQty: 0, costPrice: a.purchasePrice || 0, unit: (a.units || ["kg"])[0] })));
+    setCorteDate(new Date().toISOString().slice(0, 10));
+    setCorteObs("");
+    setShowCorteForm(true);
   };
 
-  const updItem = (idx, key, val) => {
-    setItems(prev => prev.map((it, i) => {
-      if (i !== idx) return it;
-      const upd = { ...it, [key]: val };
-      if (key === "quantity" || key === "unitCost") upd.subtotal = (upd.quantity || 0) * (upd.unitCost || 0);
-      return upd;
-    }));
-    if (key === "articleName") {
-      const artId = items[idx]?.articleId;
-      const na = artId && newArticles.find(a => a.id === artId);
-      if (na) setNewArticles(prev => prev.map(a => a.id === artId ? { ...a, name: val } : a));
-    }
+  const updCorte = (idx, key, val) => setCorteItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, [key]: val }));
+
+  const saveCorte = async () => {
+    const active = corteItems.filter(it => (it.lostQty > 0 || it.aprovQty > 0));
+    if (active.length === 0) { notify("⚠ Ingresá al menos una cantidad"); return; }
+    const lossValue = active.reduce((s, it) => s + it.lostQty * it.costPrice, 0);
+    const m = { id: uid(), type: "corte", date: new Date(corteDate).toISOString(), items: active, lossValue, obs: corteObs };
+    // Deduct stock
+    const upd = articles.map(a => ({ ...a }));
+    active.forEach(it => {
+      const idx = upd.findIndex(a => a.id === it.articleId);
+      if (idx > -1) upd[idx] = { ...upd[idx], stock: Math.max(0, (upd[idx].stock || 0) - it.lostQty - it.aprovQty) };
+    });
+    // Stock deducted by triggers not applicable here - manual update
+    for (const it of active) { const a = articles.find(x => x.id === it.articleId); if (a) await db.updateArticle(a.id, { ...a, stock: Math.max(0, a.stock - it.lostQty - it.aprovQty) }); }
+    await db.insertMerma(m);
+    await refresh();
+    setShowCorteForm(false);
+    notify(`Merma de corte registrada · Pérdida: ${money(lossValue)}`);
   };
 
-  const doLink = (idx, a) => {
-    setItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, articleId: a.id, articleName: a.name || "", unit: (a.units || ["kg"])[0], unitCost: a.purchasePrice || 0, subtotal: (it.quantity || 1) * (a.purchasePrice || 0), isNew: false }));
-    setLinkIdx(-1); setLinkQ("");
+  // Vencimiento form state
+  const [showVencForm, setShowVencForm] = useState(false);
+  const [vencArt, setVencArt] = useState(null);
+  const [vencQ, setVencQ] = useState("");
+  const [vencDate, setVencDate] = useState(new Date().toISOString().slice(0, 10));
+  const [vencObs, setVencObs] = useState("");
+  const [vencSearch, setVencSearch] = useState("");
+  const [vencDD, setVencDD] = useState(false);
+
+  const vencAvail = vencSearch ? articles.filter(a => (a.name || "").toLowerCase().includes(vencSearch.toLowerCase())).slice(0, 8) : [];
+
+  const saveVenc = async () => {
+    if (!vencArt || !vencQ || parseFloat(vencQ) <= 0) { notify("⚠ Seleccioná artículo y cantidad"); return; }
+    const qty = parseFloat(vencQ);
+    const cost = vencArt.purchasePrice || 0;
+    const lossValue = qty * cost;
+    const m = { id: uid(), type: "vencimiento", date: new Date(vencDate).toISOString(), items: [{ articleId: vencArt.id, articleName: vencArt.name, lostQty: qty, aprovQty: 0, costPrice: cost, unit: (vencArt.units || ["kg"])[0] }], lossValue, obs: vencObs };
+    const upd = articles.map(a => ({ ...a }));
+    const idx = upd.findIndex(a => a.id === vencArt.id);
+    if (idx > -1) upd[idx] = { ...upd[idx], stock: Math.max(0, (upd[idx].stock || 0) - qty) };
+    const art = articles.find(x => x.id === vencArt.id);
+    if (art) await db.updateArticle(art.id, { ...art, stock: Math.max(0, art.stock - qty) });
+    await db.insertMerma(m);
+    await refresh();
+    setShowVencForm(false); setVencArt(null); setVencQ(""); setVencObs("");
+    notify(`Merma por vencimiento registrada · Pérdida: ${money(lossValue)}`);
   };
 
-  const total = items.reduce((s, i) => s + (i.subtotal || 0), 0);
-  const isDupName = (name) => allArticles.some(a => (a.name || "").trim().toLowerCase() === name.trim().toLowerCase());
-
-  const handleInlineCreate = () => {
-    if (!newArt.name.trim() || isDupName(newArt.name)) return;
-    const art = { ...newArt, id: uid(), createdAt: new Date().toISOString(), salePrice: Math.round((newArt.purchasePrice || 0) * (1 + (newArt.marginPercent || 30) / 100) * 100) / 100 };
-    setNewArticles(prev => [...prev, art]);
-    setItems(prev => [...prev, { _key: uid(), articleId: art.id, articleName: art.name, unit: (art.units || ["kg"])[0], quantity: 1, unitCost: art.purchasePrice || 0, subtotal: art.purchasePrice || 0, isNew: true }]);
-    setNewArt({ name: "", category: "Otros", units: ["kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 });
-    setShowCreate(false);
+  const handleDel = async (id) => {
+    const m = mermas.find(x => x.id === id);
+    if (!m) return;
+    if (isPrevMonth(m.date)) { notify("⚠ No se puede eliminar: período cerrado"); setDelConfirm(null); return; }
+    // Revert stock
+    const upd = articles.map(a => ({ ...a }));
+    (m.items || []).forEach(it => {
+      const idx = upd.findIndex(a => a.id === it.articleId);
+      if (idx > -1) upd[idx] = { ...upd[idx], stock: (upd[idx].stock || 0) + (it.lostQty || 0) + (it.aprovQty || 0) };
+    });
+    // Revert stock
+    for (const it of (m.items||[])) { const a = articles.find(x => x.id === it.articleId); if (a) await db.updateArticle(a.id, { ...a, stock: a.stock + (it.lostQty||0) + (it.aprovQty||0) }); }
+    await db.deleteMerma(id);
+    await refresh();
+    setDelConfirm(null);
+    notify("Merma eliminada · Stock revertido");
   };
 
-  const handleFile = async (file) => {
-    if (!file || !file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const dataUrl = e.target.result;
-      setScanPreview(dataUrl); setScanning(true); setScanMsg("Analizando factura con IA...");
-      try {
-        const base64 = dataUrl.split(",")[1];
-        const resp = await fetch("/api/scan-invoice", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: base64, mimeType: file.type })
-        });
-        if (!resp.ok) throw new Error("Error al procesar");
-        const parsed = await resp.json();
-        if (parsed.supplier) setSupplier(parsed.supplier);
-        if (parsed.invoiceNum) setInvoiceNum(parsed.invoiceNum);
-        let created = 0; const newArts = [], newItems = [], currentAll = [...allArticles];
-        (parsed.items || []).forEach(pi => {
-          if (!pi.name) return;
-          let art = currentAll.find(a => (a.name||"").toLowerCase().trim() === pi.name.toLowerCase().trim());
-          if (!art) {
-            art = { id: uid(), name: pi.name.trim(), category: "Otros", units: [pi.unit || "kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: pi.unitCost || 0, salePrice: Math.round((pi.unitCost || 0) * 1.3 * 100) / 100, createdAt: new Date().toISOString() };
-            newArts.push(art); currentAll.push(art); created++;
-          }
-          newItems.push({ _key: uid(), articleId: art.id, articleName: art.name, unit: pi.unit || (art.units || ["kg"])[0], quantity: pi.quantity || 1, unitCost: pi.unitCost || art.purchasePrice || 0, subtotal: (pi.quantity || 1) * (pi.unitCost || art.purchasePrice || 0), isNew: !articles.find(a => a.id === art.id) });
-        });
-        if (newArts.length > 0) setNewArticles(prev => [...prev, ...newArts]);
-        setItems(prev => [...prev, ...newItems]);
-        setScanMsg(`${newItems.length} artículo(s) detectados${created > 0 ? ` · ${created} nuevo(s)` : ""}`);
-      } catch (err) { console.error(err); setScanMsg("Error al analizar. Cargá manualmente."); }
-      setScanning(false);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSave = () => {
-    const resolvedItems = items.map(({ isNew, _key, ...rest }) => ({
-      ...rest,
-      articleName: rest.articleName || allArticles.find(a => a.id === rest.articleId)?.name || ""
-    }));
-    onSave({ supplier, invoiceNum, items: resolvedItems, total, _newArticles: newArticles, _editId: editData?.id || null });
-  };
-
-  const linkResults = linkQ ? allArticles.filter(a => (a.name || "").toLowerCase().includes(linkQ.toLowerCase())).slice(0, 6) : [];
+  const corteLossTotal = corteItems.reduce((s, it) => s + it.lostQty * it.costPrice, 0);
 
   return (
-    <div className="mo" onClick={onClose}>
-      <div className="md md-lg" onClick={e => e.stopPropagation()}>
-        <div className="md-h"><h2>{editData ? "Editar" : "Registrar"} Factura de Compra</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
-        <div className="md-b">
-          {!editData && !scanning && !scanMsg && (
-            <div className={`scan-zone ${dragging ? "dragging" : ""}`}
-              onClick={() => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.capture = "environment"; inp.onchange = (ev) => handleFile(ev.target.files[0]); inp.click(); }}
-              onDrop={(ev) => { ev.preventDefault(); setDragging(false); if (ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); }}
-              onDragOver={(ev) => { ev.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)}>
-              <div style={{ marginBottom: 8, color: "var(--ac)" }}>{I.camera}</div>
-              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Escaneá tu factura con IA</div>
-              <div style={{ fontSize: 12, color: "var(--tx3)" }}>Foto o arrastrá imagen</div>
-            </div>
-          )}
-          {scanning && (
-            <div className="scan-loading">
-              {scanPreview && <img src={scanPreview} className="scan-preview" alt="" />}
-              <div className="scan-spin"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--ac)" strokeWidth="2.5" strokeLinecap="round"><path d="M21 12a9 9 0 11-6.219-8.56"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur=".8s" repeatCount="indefinite"/></path></svg></div>
-              <div className="scan-pulse" style={{ fontWeight: 600, color: "var(--ac)" }}>Analizando...</div>
-            </div>
-          )}
-          {scanMsg && !scanning && (
-            <div className="scan-result">{I.check}<span>{scanMsg}</span>
-              <button className="btn btn-sm btn-s" style={{ marginLeft: "auto" }} onClick={() => { setScanMsg(null); setScanPreview(null); }}>Escanear otra</button>
-            </div>
-          )}
+    <div>
+      <div className="kpi-g">
+        <div className="kpi kpi-r"><div className="kpi-l">Pérdida Total</div><div className="kpi-val" style={{ color: "var(--rd)" }}>{money(totalPerdida)}</div><div className="kpi-s">{mermas.length} registros</div></div>
+        <div className="kpi kpi-y"><div className="kpi-l">Cierres de Corte</div><div className="kpi-val">{countCorte}</div></div>
+        <div className="kpi kpi-o"><div className="kpi-l">Vencimientos</div><div className="kpi-val">{countVenc}</div></div>
+        <div className="kpi kpi-v"><div className="kpi-l">Merma Aprovechada</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(totalAprov)}</div><div className="kpi-s">Valor en insumos</div></div>
+      </div>
 
-          <div style={{ borderTop: scanMsg || scanning ? "1px solid var(--br)" : "none", paddingTop: scanMsg || scanning ? 14 : 0, marginTop: scanMsg || scanning ? 14 : 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
+        <div className="tabs" style={{ marginBottom: 0 }}>
+          <div className={`tab ${tab === "corte" ? "on" : ""}`} onClick={() => setTab("corte")}>Cierre de Corte</div>
+          <div className={`tab ${tab === "vencimiento" ? "on" : ""}`} onClick={() => setTab("vencimiento")}>Vencimiento</div>
+          <div className={`tab ${tab === "historial" ? "on" : ""}`} onClick={() => setTab("historial")}>Historial</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {tab === "corte" && <button className="btn btn-p" onClick={initCorte}>{I.plus} Cierre de Corte</button>}
+          {tab === "vencimiento" && <button className="btn btn-p" onClick={() => setShowVencForm(true)}>{I.plus} Merma por Vencimiento</button>}
+        </div>
+      </div>
+
+      {/* CORTE FORM */}
+      {showCorteForm && tab === "corte" && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="card-h"><h3>Cierre de Corte Diario</h3><button className="btn-i" onClick={() => setShowCorteForm(false)}>{I.x}</button></div>
+          <div className="card-b">
             <div className="fr">
-              <div className="fg"><label className="fl">Proveedor</label><input className="fi" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="Nombre del proveedor" /></div>
-              <div className="fg"><label className="fl">Nº Factura</label><input className="fi" value={invoiceNum} onChange={e => setInvoiceNum(e.target.value)} placeholder="Ej: FAC-0001" /></div>
+              <div className="fg"><label className="fl">Fecha</label><input className="fi" type="date" value={corteDate} onChange={e => setCorteDate(e.target.value)} /></div>
+              <div className="fg"><label className="fl">Observaciones</label><input className="fi" value={corteObs} onChange={e => setCorteObs(e.target.value)} placeholder="Opcional" /></div>
             </div>
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 14 }}>
-              <div className="fg" style={{ position: "relative", flex: 1, marginBottom: 0 }}>
-                <label className="fl">Agregar Artículo existente</label>
-                <input className="fi" placeholder="Buscar artículo..." value={q}
-                  onChange={e => { setQ(e.target.value); setShowDD(true); }}
-                  onFocus={() => q && setShowDD(true)}
-                  onBlur={() => setTimeout(() => setShowDD(false), 250)} />
-                {showDD && avail.length > 0 && (
-                  <div className="dd">
-                    {avail.slice(0, 8).map(a => (
-                      <div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addExisting(a.id, a.name, a.units, a.purchasePrice); }}>
-                        <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({(a.units || []).map(unitLabel).join(", ")})</span></span>
-                        {a.purchasePrice > 0 && <span style={{ fontSize: 12, color: "var(--tx3)" }}>Últ: {money(a.purchasePrice)}</span>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <button className="btn btn-s" style={{ whiteSpace: "nowrap", marginBottom: 0 }} onClick={() => setShowCreate(!showCreate)}>{I.plus} Crear Artículo</button>
-            </div>
-
-            {showCreate && (
-              <div className="inline-create">
-                <h4>Crear Artículo Rápido</h4>
-                <div className="fr3">
-                  <div className="fg"><label className="fl">Nombre</label><input className="fi" value={newArt.name} onChange={e => setNewArt(p => ({ ...p, name: e.target.value }))} placeholder="Nombre" />
-                    {newArt.name.trim() && isDupName(newArt.name) && <div className="dup-warn">{I.warn} Ya existe</div>}
-                  </div>
-                  <div className="fg"><label className="fl">Categoría</label><select className="fs" value={newArt.category} onChange={e => setNewArt(p => ({ ...p, category: e.target.value }))}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
-                  <div className="fg"><label className="fl">Unidad</label><select className="fs" value={newArt.units[0]} onChange={e => setNewArt(p => ({ ...p, units: [e.target.value] }))}>{UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}</select></div>
-                </div>
-                <div className="fr3">
-                  <div className="fg"><label className="fl">P. Compra</label><input className="fi" type="number" step="0.01" min="0" value={newArt.purchasePrice || ""} onChange={e => setNewArt(p => ({ ...p, purchasePrice: parseFloat(e.target.value) || 0 }))} /></div>
-                  <div className="fg"><label className="fl">Margen %</label><input className="fi" type="number" step="1" min="0" value={newArt.marginPercent} onChange={e => setNewArt(p => ({ ...p, marginPercent: parseFloat(e.target.value) || 0 }))} /></div>
-                  <div className="fg"><label className="fl">Stock</label><input className="fi" type="number" step="0.01" min="0" value={newArt.stock || ""} onChange={e => setNewArt(p => ({ ...p, stock: parseFloat(e.target.value) || 0 }))} /></div>
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                  <button className="btn btn-p btn-sm" disabled={!newArt.name.trim() || isDupName(newArt.name)} onClick={handleInlineCreate}>{I.check} Crear y Agregar</button>
-                  <button className="btn btn-s btn-sm" onClick={() => setShowCreate(false)}>Cancelar</button>
-                </div>
-              </div>
-            )}
-
-            {items.length > 0 && (
+            {corteArts.length === 0 ? (
+              <div className="empty"><p>No hay artículos marcados como "de corte". Editá un artículo en Inventario y activá el checkbox "Es artículo de corte".</p></div>
+            ) : (
               <>
-                <div className="ti">
-                  <div className="ti-r ti-h" style={{ gridTemplateColumns: "2fr 70px 90px 100px 100px 36px" }}><span>Artículo</span><span>Cant.</span><span>Unidad</span><span>Costo U.</span><span>Subtotal</span><span></span></div>
-                  {items.map((it, idx) => {
-                    const resolvedName = it.articleName || allArticles.find(a => a.id === it.articleId)?.name || "";
-                    return (
-                    <div className="ti-r" key={it._key || it.articleId || idx} style={{ gridTemplateColumns: "2fr 70px 90px 100px 100px 36px" }}>
-                      <div>
-                        {it.isNew ? (
-                          <input className="fi" value={resolvedName} onChange={e => updItem(idx, "articleName", e.target.value)} style={{ padding: "4px 7px", fontSize: 12, fontWeight: 500 }} />
-                        ) : (
-                          <div style={{ fontWeight: 500, fontSize: 12, padding: "4px 0", minHeight: 24 }}>{resolvedName}</div>
-                        )}
-                        <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 2 }}>
-                          {it.isNew && <span className="scan-new">NUEVO</span>}
-                          <button className="btn-i" title="Vincular a artículo existente" onClick={() => { setLinkIdx(linkIdx === idx ? -1 : idx); setLinkQ(""); }} style={{ padding: 2, color: linkIdx === idx ? "var(--ac)" : "var(--tx3)", fontSize: 10 }}>{I.search}</button>
-                        </div>
-                        {linkIdx === idx && (
-                          <div style={{ marginTop: 4 }}>
-                            <input className="fi" placeholder="Buscar artículo para vincular..." value={linkQ} onChange={e => setLinkQ(e.target.value)}
-                              style={{ padding: "4px 8px", fontSize: 11, background: "var(--acL)", border: "1px solid var(--ac)" }} autoFocus />
-                            {linkResults.length > 0 && (
-                              <div style={{ border: "1px solid var(--br)", borderRadius: "0 0 8px 8px", background: "var(--bg2)", maxHeight: 150, overflowY: "auto" }}>
-                                {linkResults.map(a => (
-                                  <div key={a.id} className="dd-i" onClick={() => doLink(idx, a)}>
-                                    <span style={{ fontSize: 12 }}>{a.name}</span>
-                                    <span style={{ fontSize: 10, color: "var(--tx3)" }}>{money(a.purchasePrice)}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
-                      <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>
-                        {UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}
-                      </select>
-                      <input className="fi" type="number" step="0.01" min="0" value={it.unitCost} onChange={e => updItem(idx, "unitCost", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
-                      <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
-                      <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                <div className="merma-grid">
+                  <div className="merma-row merma-row-h"><span>Artículo</span><span>Perdida</span><span>Aprovech.</span><span>P.Compra</span><span>Pérdida $</span></div>
+                  {corteItems.map((it, idx) => (
+                    <div className="merma-row" key={it.articleId}>
+                      <div style={{ fontWeight: 500 }}>{it.articleName}<div style={{ fontSize: 10, color: "var(--tx3)" }}>Stock: {articles.find(a => a.id === it.articleId)?.stock?.toFixed(2) || 0} {it.unit}</div></div>
+                      <input className="fi" type="number" step="0.01" min="0" value={it.lostQty || ""} onChange={e => updCorte(idx, "lostQty", parseFloat(e.target.value) || 0)} placeholder="0" style={{ padding: "5px 7px", fontSize: 12 }} />
+                      <input className="fi" type="number" step="0.01" min="0" value={it.aprovQty || ""} onChange={e => updCorte(idx, "aprovQty", parseFloat(e.target.value) || 0)} placeholder="0" style={{ padding: "5px 7px", fontSize: 12 }} />
+                      <span style={{ fontSize: 12, color: "var(--tx2)" }}>{money(it.costPrice)}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: it.lostQty > 0 ? "var(--rd)" : "var(--tx3)" }}>{money(it.lostQty * it.costPrice)}</span>
                     </div>
-                    );
-                  })}
+                  ))}
                 </div>
-                <div className="tt"><span className="tt-l">Total Factura</span><span className="tt-v">{money(total)}</span></div>
+                <div className="tt" style={{ marginTop: 10 }}><span className="tt-l">Pérdida Total del Corte</span><span className="tt-v" style={{ color: "var(--rd)" }}>{money(corteLossTotal)}</span></div>
+                <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end" }}>
+                  <button className="btn btn-s" onClick={() => setShowCorteForm(false)}>Cancelar</button>
+                  <button className="btn btn-p" onClick={saveCorte}>Registrar Cierre de Corte</button>
+                </div>
               </>
             )}
           </div>
         </div>
-        <div className="md-f">
-          <button className="btn btn-s" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-p" disabled={items.length === 0 || !supplier.trim() || scanning} onClick={handleSave}>{editData ? "Guardar Cambios" : "Registrar Compra"}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
+      )}
 
-// ============ SALES ============
-function SalesPage({ articles, sales, refresh, payMethods, notify }) {
-  const [modal, setModal] = useState(false);
-  const [editSale, setEditSale] = useState(null);
-  const [view, setView] = useState(null);
-  const [search, setSearch] = useState("");
-  const [pmFilter, setPmFilter] = useState("");
-  const [delConfirm, setDelConfirm] = useState(null);
-  const sorted = useMemo(() => [...sales].sort((a, b) => new Date(b.date) - new Date(a.date)), [sales]);
-  const filtered = sorted.filter(s =>
-    ((s.client || "").toLowerCase().includes(search.toLowerCase()) || s.items.some(i => (i.articleName || "").toLowerCase().includes(search.toLowerCase())))
-    && (!pmFilter || s.payMethod === pmFilter)
-  );
-  const activePM = payMethods.filter(pm => pm.active);
-
-  const handleSave = async (data) => {
-    const { _editId, ...saleData } = data;
-    try {
-      if (_editId) {
-        await db.updateSale(_editId, saleData, saleData.items);
-        notify("Venta actualizada");
-      } else {
-        await db.insertSale(saleData, saleData.items);
-        notify("Venta registrada: " + money(saleData.total));
-      }
-      await refresh();
-    } catch(e) { notify("Error: "+e.message); }
-    setModal(false); setEditSale(null);
-  };
-
-  const handleDel = async (id) => {
-    const s = sales.find(x => x.id === id);
-    if (!s) return;
-    if (isPrevMonth(s.date)) { notify("⚠ No se puede eliminar: período cerrado"); setDelConfirm(null); return; }
-    await db.deleteSale(id);
-    await refresh();
-    setDelConfirm(null);
-    notify("Venta eliminada · Stock revertido");
-  };
-
-  const openEdit = (s) => {
-    if (isPrevMonth(s.date)) { notify("⚠ No se puede editar: período cerrado"); return; }
-    setEditSale(s); setModal(true);
-  };
-
-  const pmName = (id) => payMethods.find(pm => pm.id === id)?.name || id || "—";
-
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-          <div className="sb">{I.search}<input className="fi" placeholder="Buscar por cliente o artículo..." value={search} onChange={e => setSearch(e.target.value)} /></div>
-          <select className="fs" style={{ width: "auto" }} value={pmFilter} onChange={e => setPmFilter(e.target.value)}>
-            <option value="">Todos los pagos</option>
-            {payMethods.map(pm => <option key={pm.id} value={pm.id}>{pm.name}</option>)}
-          </select>
-        </div>
-        <button className="btn btn-p" onClick={() => { setEditSale(null); setModal(true); }}>{I.plus} Nueva Venta</button>
-      </div>
-      <div className="card"><div style={{ padding: 0 }}><div className="tw">
-        <table>
-          <thead><tr><th>#</th><th>Fecha</th><th>Cliente</th><th>Pago</th><th>Total</th><th>Ganancia</th><th style={{ width: 110 }}></th></tr></thead>
-          <tbody>
-            {filtered.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay ventas registradas</p></div></td></tr> :
-              filtered.map((s) => (
-                <tr key={s.id}>
-                  <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{sorted.length - sorted.indexOf(s)}</td>
-                  <td style={{ fontSize: 12 }}>{fDateTime(s.date)}</td>
-                  <td style={{ fontWeight: 500 }}>{s.client || "—"}</td>
-                  <td><span className="pm-badge">{pmName(s.payMethod)}</span></td>
-                  <td style={{ fontWeight: 600 }}>{money(s.total)}</td>
-                  <td><span className="badge b-gn">{money(s.profit)}</span></td>
-                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    <button className="btn-i" onClick={() => setView(s)}>{I.eye}</button>
-                    {isPrevMonth(s.date) ? <span className="lock-badge">{I.lock} Cerrado</span> : (<>
-                      <button className="btn-i" onClick={() => openEdit(s)}>{I.edit}</button>
-                      {delConfirm === s.id ? (
-                        <><button className="btn-i" onClick={() => handleDel(s.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
-                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
-                      ) : (
-                        <button className="btn-i" onClick={() => setDelConfirm(s.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
-                      )}
-                    </>)}
-                  </div></td>
-                </tr>
-              ))}
-          </tbody>
-        </table>
-      </div></div></div>
-
-      {modal && <SaleModal articles={articles} payMethods={activePM} editData={editSale} onSave={handleSave} onClose={() => { setModal(false); setEditSale(null); }} />}
-      {view && (
-        <div className="mo" onClick={() => setView(null)}>
-          <div className="md" onClick={e => e.stopPropagation()}>
-            <div className="md-h"><h2>Detalle de Venta</h2><button className="btn-i" onClick={() => setView(null)}>{I.x}</button></div>
-            <div className="md-b">
-              <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 13, color: "var(--tx2)", flexWrap: "wrap" }}>
-                <span>Fecha: <strong>{fDateTime(view.date)}</strong></span>
-                <span>Cliente: <strong>{view.client || "Sin especificar"}</strong></span>
-                <span>Pago: <strong><span className="pm-badge">{pmName(view.payMethod)}</span></strong></span>
+      {/* VENCIMIENTO FORM */}
+      {showVencForm && tab === "vencimiento" && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="card-h"><h3>Merma por Vencimiento</h3><button className="btn-i" onClick={() => setShowVencForm(false)}>{I.x}</button></div>
+          <div className="card-b">
+            <div className="fr">
+              <div className="fg"><label className="fl">Fecha</label><input className="fi" type="date" value={vencDate} onChange={e => setVencDate(e.target.value)} /></div>
+              <div className="fg" style={{ position: "relative" }}>
+                <label className="fl">Artículo</label>
+                {vencArt ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "var(--acL)", borderRadius: 8, fontSize: 13, fontWeight: 500 }}>
+                    {vencArt.name} <button className="btn-i" onClick={() => { setVencArt(null); setVencSearch(""); }} style={{ marginLeft: "auto", padding: 2 }}>{I.x}</button>
+                  </div>
+                ) : (
+                  <>
+                    <input className="fi" placeholder="Buscar artículo..." value={vencSearch} onChange={e => { setVencSearch(e.target.value); setVencDD(true); }} onFocus={() => vencSearch && setVencDD(true)} onBlur={() => setTimeout(() => setVencDD(false), 250)} />
+                    {vencDD && vencAvail.length > 0 && (
+                      <div className="dd">{vencAvail.map(a => (
+                        <div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); setVencArt(a); setVencSearch(""); setVencDD(false); }}>
+                          <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({a.stock?.toFixed(2)} {(a.units || [])[0]})</span></span>
+                          <span style={{ fontSize: 11, color: "var(--tx3)" }}>{money(a.purchasePrice)}</span>
+                        </div>
+                      ))}</div>
+                    )}
+                  </>
+                )}
               </div>
-              <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Unidad</th><th>P. Venta</th><th>Subtotal</th><th>Ganancia</th></tr></thead>
-                <tbody>{view.items.map((it, i) => (
-                  <tr key={i}><td style={{ fontWeight: 500 }}>{it.articleName}</td><td>{it.quantity}</td><td>{unitLabel(it.unit)}</td><td>{money(it.unitPrice)}</td><td style={{ fontWeight: 600 }}>{money(it.subtotal)}</td><td><span className="badge b-gn">{money(it.profit)}</span></td></tr>
-                ))}</tbody></table>
-              <div className="tt" style={{ marginTop: 14 }}>
-                <div><span className="tt-l">Total</span><div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {money(view.profit)}</div></div>
-                <span className="tt-v">{money(view.total)}</span>
-              </div>
+            </div>
+            <div className="fr">
+              <div className="fg"><label className="fl">Cantidad Perdida</label><input className="fi" type="number" step="0.01" min="0" value={vencQ} onChange={e => setVencQ(e.target.value)} placeholder={vencArt ? `en ${(vencArt.units || ["kg"])[0]}` : "0"} /></div>
+              <div className="fg"><label className="fl">Costo Unitario</label><input className="fi" readOnly value={vencArt ? money(vencArt.purchasePrice || 0) : "—"} /></div>
+              <div className="fg"><label className="fl">Valor Pérdida</label><input className="fi" readOnly value={vencArt && vencQ ? money(parseFloat(vencQ) * (vencArt.purchasePrice || 0)) : "—"} style={{ fontWeight: 600, color: "var(--rd)" }} /></div>
+            </div>
+            <div className="fg"><label className="fl">Observaciones</label><input className="fi" value={vencObs} onChange={e => setVencObs(e.target.value)} placeholder="Motivo, lote, etc. (opcional)" /></div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
+              <button className="btn btn-s" onClick={() => setShowVencForm(false)}>Cancelar</button>
+              <button className="btn btn-p" disabled={!vencArt || !vencQ || parseFloat(vencQ) <= 0} onClick={saveVenc}>Registrar Merma</button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* HISTORIAL */}
+      {(tab === "historial" || (tab === "corte" && !showCorteForm) || (tab === "vencimiento" && !showVencForm)) && (
+        <div className="card"><div style={{ padding: 0 }}><div className="tw">
+          <table>
+            <thead><tr><th>Fecha</th><th>Tipo</th><th>Artículos</th><th>Pérdida</th><th>Obs</th><th style={{ width: 80 }}></th></tr></thead>
+            <tbody>
+              {sorted.filter(m => tab === "historial" || m.type === tab).length === 0 ? (
+                <tr><td colSpan={6}><div className="empty"><p>Sin mermas registradas</p></div></td></tr>
+              ) : sorted.filter(m => tab === "historial" || m.type === tab).map(m => (
+                <tr key={m.id}>
+                  <td style={{ fontSize: 12 }}>{fDateTime(m.date)}</td>
+                  <td><span className={`merma-type ${m.type === "corte" ? "merma-perdida" : "merma-venc"}`}>{m.type === "corte" ? "Corte" : "Vencimiento"}</span></td>
+                  <td style={{ fontSize: 12 }}>{(m.items || []).map(it => it.articleName).join(", ").slice(0, 50)}{(m.items || []).length > 2 ? "..." : ""}</td>
+                  <td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(m.lossValue)}</td>
+                  <td style={{ fontSize: 11, color: "var(--tx3)" }}>{m.obs || "—"}</td>
+                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    {isPrevMonth(m.date) ? <span className="lock-badge">{I.lock} Cerrado</span> :
+                      delConfirm === m.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(m.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                      ) : (
+                        <button className="btn-i" onClick={() => setDelConfirm(m.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                      )}
+                  </div></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div></div></div>
       )}
     </div>
   );
 }
 
-function SaleModal({ articles, payMethods, editData, onSave, onClose }) {
-  const [client, setClient] = useState(editData?.client || "");
-  const [payMethod, setPayMethod] = useState(editData?.payMethod || payMethods[0]?.id || "");
-  const [promo, setPromo] = useState(false);
-  const [items, setItems] = useState(() => {
-    if (!editData) return [];
-    return editData.items.map(it => ({ ...it, origPrice: it.unitPrice }));
-  });
-  const [q, setQ] = useState("");
-  const [showDD, setShowDD] = useState(false);
+// ============ COMBOS ============
+function CombosPage({ articles, combos, refresh, notify }) {
+  const [modal, setModal] = useState(null);
+  const [delConfirm, setDelConfirm] = useState(null);
 
-  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id)) : [];
-
-  const addExisting = (id, name, units, salePrice, purchasePrice, stock) => {
-    setItems(prev => [...prev, {
-      articleId: id, articleName: name, unit: (units || ["kg"])[0],
-      quantity: 1, unitPrice: salePrice, origPrice: salePrice, costPrice: purchasePrice,
-      subtotal: salePrice, profit: salePrice - purchasePrice, stock: stock
-    }]);
-    setQ(""); setShowDD(false);
+  const handleSave = async (combo) => {
+    try {
+      if (combo.id) { await db.updateCombo(combo.id, combo); notify("Combo actualizado"); }
+      else { await db.insertCombo(combo); notify("Combo creado"); }
+      await refresh(); setModal(null);
+    } catch(e) { notify("Error: "+e.message); }
   };
+  const handleDel = async (id) => { await db.deleteCombo(id); await refresh(); setDelConfirm(null); notify("Combo eliminado"); };
+  const toggleActive = async (id) => { const c = combos.find(x => x.id === id); if (c) { await db.updateCombo(id, { ...c, active: !c.active }); await refresh(); } };
 
-  const updItem = (idx, key, val) => {
-    setItems(prev => prev.map((it, i) => {
-      if (i !== idx) return it;
-      const upd = { ...it, [key]: val };
-      if (key === "quantity" || key === "unitPrice") {
-        upd.subtotal = (upd.quantity || 0) * (upd.unitPrice || 0);
-        upd.profit = (upd.quantity || 0) * ((upd.unitPrice || 0) - (upd.costPrice || 0));
-      }
-      return upd;
-    }));
+  return (
+    <div>
+      <div className="kpi-g">
+        <div className="kpi kpi-o"><div className="kpi-l">Total Combos</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{combos.length}</div></div>
+        <div className="kpi kpi-v"><div className="kpi-l">Activos</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{combos.filter(c => c.active !== false).length}</div></div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
+        <div />
+        <button className="btn btn-p" onClick={() => setModal({ name: "", items: [], suggestedPrice: 0 })}>{I.plus} Nuevo Combo</button>
+      </div>
+      <div className="card"><div style={{ padding: 0 }}><div className="tw">
+        <table>
+          <thead><tr><th>Combo</th><th>Ítems</th><th>Costo</th><th>Precio Sugerido</th><th>Estado</th><th style={{ width: 100 }}></th></tr></thead>
+          <tbody>
+            {combos.length === 0 ? <tr><td colSpan={6}><div className="empty"><p>No hay combos. ¡Creá el primero!</p></div></td></tr> :
+              combos.map(c => {
+                const cost = c.items.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.purchasePrice || 0); }, 0);
+                return (
+                  <tr key={c.id}>
+                    <td style={{ fontWeight: 600 }}>{c.name}</td>
+                    <td style={{ fontSize: 11 }}>{c.items.map(ci => { const a = articles.find(x => x.id === ci.articleId); return `${a?.name || ci.name} (${ci.qty} ${ci.unit || "kg"})`; }).join(", ")}</td>
+                    <td>{money(cost)}</td>
+                    <td style={{ fontWeight: 600, color: "var(--ac)" }}>{money(c.suggestedPrice)}</td>
+                    <td><button className={`btn btn-sm ${c.active !== false ? "btn-p" : "btn-s"}`} style={c.active !== false ? { background: "var(--gn)" } : { color: "var(--tx3)" }} onClick={() => toggleActive(c.id)}>{c.active !== false ? <>{I.check} Activo</> : "Inactivo"}</button></td>
+                    <td><div style={{ display: "flex", gap: 4 }}>
+                      <button className="btn-i" onClick={() => setModal({ ...c })}>{I.edit}</button>
+                      {delConfirm === c.id ? (<><button className="btn-i" onClick={() => handleDel(c.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button><button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>) :
+                        (<button className="btn-i" onClick={() => setDelConfirm(c.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>)}
+                    </div></td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
+      </div></div></div>
+
+      {modal && <ComboModal articles={articles} combo={modal} onSave={handleSave} onClose={() => setModal(null)} />}
+    </div>
+  );
+}
+
+function ComboModal({ articles, combo, onSave, onClose }) {
+  const [name, setName] = useState(combo.name || "");
+  const [comboItems, setComboItems] = useState(combo.items || []);
+  const [price, setPrice] = useState(combo.suggestedPrice || 0);
+  const [q, setQ] = useState(""); const [dd, setDD] = useState(false);
+  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && !comboItems.find(ci => ci.articleId === a.id)).slice(0, 8) : [];
+
+  const addArt = (a) => {
+    setComboItems(prev => [...prev, { articleId: a.id, name: a.name, unit: (a.units || ["kg"])[0], qty: 0.25 }]);
+    setQ(""); setDD(false);
   };
+  const updCI = (idx, key, val) => setComboItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, [key]: val }));
 
-  const total = items.reduce((s, i) => s + (i.subtotal || 0), 0);
-  const profit = items.reduce((s, i) => s + (i.profit || 0), 0);
+  const totalCost = comboItems.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.purchasePrice || 0); }, 0);
+  const totalRetail = comboItems.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.salePrice || 0); }, 0);
 
   return (
     <div className="mo" onClick={onClose}>
-      <div className="md md-lg" onClick={e => e.stopPropagation()}>
-        <div className="md-h"><h2>{editData ? "Editar" : "Nuevo"} Ticket de Venta</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
+      <div className="md" onClick={e => e.stopPropagation()}>
+        <div className="md-h"><h2>{combo.id ? "Editar" : "Nuevo"} Combo</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
         <div className="md-b">
-          <div className="fr">
-            <div className="fg"><label className="fl">Cliente (opcional)</label><input className="fi" value={client} onChange={e => setClient(e.target.value)} placeholder="Nombre del cliente" /></div>
-            <div className="fg">
-              <label className="fl">Método de Pago</label>
-              <div className="pm-grid">
-                {payMethods.map(pm => (
-                  <button key={pm.id} type="button" className={`pm-chip ${payMethod === pm.id ? "on" : ""}`} onClick={() => setPayMethod(pm.id)}>
-                    {payMethod === pm.id && I.check} {pm.name}
-                  </button>
-                ))}
+          <div className="fg"><label className="fl">Nombre del Combo</label><input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder='Ej: Combo Yanira' /></div>
+          <div className="fg" style={{ position: "relative" }}>
+            <label className="fl">Agregar Artículo al Combo</label>
+            <input className="fi" placeholder="Buscar artículo..." value={q} onChange={e => { setQ(e.target.value); setDD(true); }} onFocus={() => q && setDD(true)} onBlur={() => setTimeout(() => setDD(false), 250)} />
+            {dd && avail.length > 0 && (<div className="dd">{avail.map(a => (<div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addArt(a); }}><span>{a.name}</span><span style={{ fontSize: 11, color: "var(--tx3)" }}>{money(a.salePrice)}/u</span></div>))}</div>)}
+          </div>
+          {comboItems.length > 0 && (
+            <div style={{ margin: "8px 0" }}>
+              {comboItems.map((ci, idx) => {
+                const a = articles.find(x => x.id === ci.articleId);
+                return (
+                  <div className="comp-ingr-r" key={ci.articleId} style={{ padding: "6px 0" }}>
+                    <span style={{ flex: 2, fontWeight: 500 }}>{a?.name || ci.name}</span>
+                    <input className="fi" type="number" step="0.01" min="0.01" value={ci.qty} onChange={e => updCI(idx, "qty", parseFloat(e.target.value) || 0)} style={{ width: 70, padding: "4px 7px", fontSize: 12 }} />
+                    <select className="fs" value={ci.unit} onChange={e => updCI(idx, "unit", e.target.value)} style={{ width: 80, padding: "4px 7px", fontSize: 12 }}>{UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}</select>
+                    <span style={{ fontSize: 11, color: "var(--tx3)", minWidth: 65 }}>Vta: {money((ci.qty || 0) * (a?.salePrice || 0))}</span>
+                    <button className="btn-i" onClick={() => setComboItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", padding: 2 }}>{I.trash}</button>
+                  </div>
+                );
+              })}
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderTop: "1px solid var(--br)", marginTop: 6, fontSize: 12 }}>
+                <span>Costo total: <strong>{money(totalCost)}</strong></span>
+                <span>Precio individual: <strong>{money(totalRetail)}</strong></span>
               </div>
             </div>
-          </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
-            <div className="fg" style={{ position: "relative", flex: 1, marginBottom: 0 }}>
-              <label className="fl">Agregar Artículo</label>
-              <input className="fi" placeholder="Buscar artículo..." value={q} onChange={e => { setQ(e.target.value); setShowDD(true); }} onFocus={() => q && setShowDD(true)} onBlur={() => setTimeout(() => setShowDD(false), 250)} />
-              {showDD && avail.length > 0 && (
-                <div className="dd">
-                  {avail.slice(0, 8).map(a => (
-                      <div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addExisting(a.id, a.name, a.units, a.salePrice, a.purchasePrice, a.stock); }}>
-                        <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({a.stock} {(a.units || [])[0]})</span></span>
-                        <span style={{ fontWeight: 600, color: "var(--ac)", fontSize: 12 }}>{money(a.salePrice)}</span>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, color: promo ? "var(--ac)" : "var(--tx3)", whiteSpace: "nowrap", marginTop: 16 }}>
-              <input type="checkbox" checked={promo} onChange={e => setPromo(e.target.checked)} style={{ accentColor: "var(--ac)" }} /> Promo/Descuento
-            </label>
-          </div>
-          {items.length > 0 && (
-            <>
-              <div className="ti">
-                <div className="ti-r ti-h" style={{ gridTemplateColumns: promo ? "2fr 70px 90px 90px 90px 36px" : "2fr 70px 90px 100px 36px" }}>
-                  <span>Artículo</span><span>Cant.</span><span>Unidad</span>{promo && <span>P.Unit.</span>}<span>Subtotal</span><span></span>
-                </div>
-                {items.map((it, idx) => {
-                  const art = articles.find(a => a.id === it.articleId);
-                  const resolvedName = it.articleName || art?.name || "";
-                  return (
-                    <div className="ti-r" key={it.articleId || idx} style={{ gridTemplateColumns: promo ? "2fr 70px 90px 90px 90px 36px" : "2fr 70px 90px 100px 36px" }}>
-                      <div>
-                        <div style={{ fontWeight: 500 }}>{resolvedName}</div>
-                        <div style={{ fontSize: 11, color: "var(--ac)" }}>
-                          {money(it.unitPrice)}/{it.unit}
-                          {promo && it.unitPrice !== it.origPrice && <span style={{ textDecoration: "line-through", color: "var(--tx3)", marginLeft: 4 }}>{money(it.origPrice)}</span>}
-                        </div>
-                        {it.quantity > (it.stock || 9999) && <div style={{ fontSize: 10, color: "var(--rd)" }}>⚠ Stock: {it.stock}</div>}
-                      </div>
-                      <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
-                      <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>
-                        {(art?.units || ["kg"]).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
-                      </select>
-                      {promo && (
-                        <input className="fi" type="number" step="0.01" min="0" value={it.unitPrice} onChange={e => updItem(idx, "unitPrice", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12, background: it.unitPrice !== it.origPrice ? "var(--ywL)" : "var(--bg2)" }} />
-                      )}
-                      <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
-                      <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="tt">
-                <div><span className="tt-l">Total del Ticket</span><div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {money(profit)}</div></div>
-                <span className="tt-v">{money(total)}</span>
-              </div>
-            </>
           )}
+          <div className="fr">
+            <div className="fg"><label className="fl">Precio Sugerido del Combo</label><input className="fi" type="number" step="0.01" min="0" value={price || ""} onChange={e => setPrice(parseFloat(e.target.value) || 0)} placeholder="0.00" />
+              {price > 0 && totalRetail > 0 && <span style={{ fontSize: 10, color: "var(--gn)", display: "block", marginTop: 2 }}>Descuento implícito: {money(totalRetail - price)} ({((1 - price / totalRetail) * 100).toFixed(1)}% off) · Ganancia: {money(price - totalCost)}</span>}
+            </div>
+          </div>
         </div>
         <div className="md-f">
           <button className="btn btn-s" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-p" disabled={items.length === 0 || !payMethod} onClick={() => {
-            const resolvedItems = items.map(({ origPrice, stock, ...rest }) => ({
-              ...rest,
-              articleName: rest.articleName || articles.find(a => a.id === rest.articleId)?.name || ""
-            }));
-            onSave({ client, payMethod, items: resolvedItems, total, profit, _editId: editData?.id || null });
-          }}>
-            {editData ? "Guardar Cambios" : "Registrar Venta"}
+          <button className="btn btn-p" disabled={!name.trim() || comboItems.length === 0 || !price} onClick={() => onSave({ ...combo, name, items: comboItems, suggestedPrice: price })}>
+            {combo.id ? "Guardar Cambios" : "Crear Combo"}
           </button>
         </div>
       </div>
@@ -1029,15 +1070,13 @@ function PayMethodsPage({ payMethods, refresh, notify }) {
   };
 
   const handleDel = async (id) => {
-    await db.deletePayMethod(id);
-    await refresh();
+    await db.deletePayMethod(id); await refresh();
     setDelConfirm(null);
     notify("Método de pago eliminado");
   };
 
   const toggleActive = async (id) => {
-    const pm = payMethods.find(p => p.id === id);
-    if (pm) { await db.updatePayMethod(id, { ...pm, active: !pm.active }); await refresh(); }
+    const pm = payMethods.find(p=>p.id===id); if(pm) { await db.updatePayMethod(id, {...pm, active:!pm.active}); await refresh(); }
   };
 
   const activeCount = payMethods.filter(p => p.active).length;
@@ -1376,7 +1415,7 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
         body: JSON.stringify({ prompt: prompts[mode], dataContext }),
       });
       const data = await resp.json();
-      setResponse(data.text || data.error || "Error al procesar");
+      setResponse(data.text || data.error || "Error");
     } catch (err) {
       console.error(err);
       setResponse("Error al conectar con el asesor IA. Intentá de nuevo en unos segundos.");
@@ -1436,9 +1475,11 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
 }
 
 // ============ REPORTS ============
-function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
+function ReportsPage({ articles, sales, purchases, expenses, mermas, devoluciones, payMethods }) {
   const [tab, setTab] = useState("pnl");
   const [period, setPeriod] = useState("all");
+  const [priceArtId, setPriceArtId] = useState("");
+  const [priceProv, setPriceProv] = useState("");
 
   const filterP = (arr) => {
     if (period === "all") return arr;
@@ -1451,17 +1492,57 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
 
   const pmName = (id) => (payMethods || []).find(pm => pm.id === id)?.name || id || "Sin definir";
 
-  const pS = filterP(sales), pP = filterP(purchases), pE = filterP(expenses);
+  const pS = filterP(sales), pP = filterP(purchases), pE = filterP(expenses), pM = filterP(mermas || []);
+  const pPNormal = pP.filter(p => !p.isReposition);
+  const pPRepos = pP.filter(p => p.isReposition);
   const rev = pS.reduce((a, s) => a + s.total, 0);
   const prof = pS.reduce((a, s) => a + s.profit, 0);
   const cost = rev - prof;
-  const exp = pP.reduce((a, p) => a + p.total, 0);
+  const exp = pPNormal.reduce((a, p) => a + p.total, 0);
+  const expRepos = pPRepos.reduce((a, p) => a + p.total, 0);
   const margin = rev > 0 ? (prof / rev * 100) : 0;
 
   const totalGastos = pE.reduce((a, e) => a + (e.amount || 0), 0);
   const gastosFijos = pE.filter(e => e.type === "fijo").reduce((a, e) => a + (e.amount || 0), 0);
   const gastosVar = pE.filter(e => e.type === "variable").reduce((a, e) => a + (e.amount || 0), 0);
-  const netResult = prof - totalGastos;
+
+  // Merma analytics
+  const mermaCorte = pM.filter(m => m.type === "corte");
+  const mermaVenc = pM.filter(m => m.type === "vencimiento");
+  const mermaCorteTotal = mermaCorte.reduce((a, m) => a + (m.lossValue || 0), 0);
+  const mermaVencTotal = mermaVenc.reduce((a, m) => a + (m.lossValue || 0), 0);
+  const mermaTotalLoss = mermaCorteTotal + mermaVencTotal;
+  const mermaAprovVal = mermaCorte.reduce((a, m) => a + (m.items || []).reduce((s, it) => s + (it.aprovQty || 0) * (it.costPrice || 0), 0), 0);
+
+  // Merma by article
+  const mermaArtMap = {};
+  pM.forEach(m => (m.items || []).forEach(it => {
+    if (!mermaArtMap[it.articleId]) mermaArtMap[it.articleId] = { name: it.articleName, lostQty: 0, aprovQty: 0, lossVal: 0, count: 0 };
+    mermaArtMap[it.articleId].lostQty += it.lostQty || 0;
+    mermaArtMap[it.articleId].aprovQty += it.aprovQty || 0;
+    mermaArtMap[it.articleId].lossVal += (it.lostQty || 0) * (it.costPrice || 0);
+    mermaArtMap[it.articleId].count++;
+  }));
+  const mermaByArt = Object.values(mermaArtMap).sort((a, b) => b.lossVal - a.lossVal);
+  const maxMermaArt = mermaByArt[0]?.lossVal || 1;
+
+  // Devoluciones analytics by status
+  const pD = filterP(devoluciones || []);
+  const devolTotal = pD.reduce((a, d) => a + (d.totalValue || 0), 0);
+  const devolPend = pD.filter(d => d.status === "pendiente");
+  const devolCred = pD.filter(d => d.status === "credito");
+  const devolRep = pD.filter(d => d.status === "repuesto");
+  const devolPendVal = devolPend.reduce((a, d) => a + (d.totalValue || 0), 0);
+  const devolCredVal = devolCred.reduce((a, d) => a + (d.totalValue || 0), 0);
+  const devolRepVal = devolRep.reduce((a, d) => a + (d.totalValue || 0), 0);
+
+  // Net result: profit - gastos - merma + créditos devol
+  const netResult = prof - totalGastos - mermaTotalLoss + devolCredVal;
+
+  // Discount analytics
+  const totalDiscounts = pS.reduce((a, s) => a + (s.discountAmount || 0), 0);
+  const discItemTotal = pS.filter(s => s.discountMode === "item").reduce((a, s) => a + (s.discountAmount || 0), 0);
+  const discPctTotal = pS.filter(s => s.discountMode === "percent").reduce((a, s) => a + (s.discountAmount || 0), 0);
 
   const gastoCatMap = {};
   pE.forEach(e => { gastoCatMap[e.category] = (gastoCatMap[e.category] || 0) + (e.amount || 0); });
@@ -1509,6 +1590,7 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
       [],
       ["Concepto", "Monto"],
       ["Ingresos por Ventas", moneyNum(rev)],
+      ["(-) Descuentos Otorgados", moneyNum(-totalDiscounts)],
       ["(-) Costo de Mercadería Vendida", moneyNum(-cost)],
       ["= Ganancia Bruta", moneyNum(prof)],
       [],
@@ -1517,17 +1599,49 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
       ["Gastos Variables", moneyNum(-gastosVar)],
       ["Total Gastos Operativos", moneyNum(-totalGastos)],
       [],
+      ["MERMA / PÉRDIDAS", ""],
+      ["Merma por Corte (pérdida)", moneyNum(-mermaCorteTotal)],
+      ["Merma por Vencimiento", moneyNum(-mermaVencTotal)],
+      ["Merma Aprovechada (informativo)", moneyNum(mermaAprovVal)],
+      ["Total Merma (pérdida)", moneyNum(-mermaTotalLoss)],
+      [],
+      ["DEVOLUCIONES A PROVEEDOR", ""],
+      ["Pendientes (suspendido)", moneyNum(devolPendVal)],
+      ["Con Crédito (reduce costo)", moneyNum(devolCredVal)],
+      ["Repuesto (sin impacto)", moneyNum(devolRepVal)],
+      ["Compras de reposición (no suman al costo)", moneyNum(expRepos)],
+      [],
       ["= RESULTADO NETO", moneyNum(netResult)],
       [],
       ["Margen Bruto", margin.toFixed(1) + "%"],
-      ["Compras a Proveedores (ref.)", moneyNum(exp)],
+      ["Compras normales (ref.)", moneyNum(exp)],
+      ["Compras reposición (ref.)", moneyNum(expRepos)],
     ];
     sheets.push({ name: "P&L", rows: pnlRows });
 
+    // Merma sheet
+    const mermaRows = [["Fecha", "Tipo", "Artículo", "Perdido", "Aprovechado", "Costo Unit.", "Pérdida $", "Observación"]];
+    [...pM].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(m => {
+      (m.items || []).forEach(it => {
+        mermaRows.push([fDateTime(m.date), m.type === "corte" ? "Corte" : "Vencimiento", it.articleName, moneyNum(it.lostQty), moneyNum(it.aprovQty || 0), moneyNum(it.costPrice), moneyNum((it.lostQty || 0) * (it.costPrice || 0)), m.obs || ""]);
+      });
+    });
+    sheets.push({ name: "Merma", rows: mermaRows });
+
+    // Devoluciones sheet
+    const devolRows = [["Fecha", "Proveedor", "Factura", "Artículo", "Cant.", "Valor", "Estado", "Obs"]];
+    [...pD].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(d => {
+      (d.items || []).forEach(it => devolRows.push([fDateTime(d.date), d.supplier, d.invoiceNum || "—", it.articleName, moneyNum(it.devQty), moneyNum(it.devQty * (it.unitCost || 0)), d.status === "pendiente" ? "Pendiente" : d.status === "credito" ? "Crédito" : "Repuesto", d.obs || ""]));
+    });
+    sheets.push({ name: "Devoluciones", rows: devolRows });
+
     // Sales sheet
-    const salesRows = [["Fecha", "Cliente", "Método de Pago", "Artículos", "Total", "Ganancia"]];
+    const salesRows = [["Fecha", "Cliente", "Método Pago", "Pago Mixto", "Descuento", "Desc. Monto", "Total", "Ganancia"]];
     [...pS].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(s => {
-      salesRows.push([fDateTime(s.date), s.client || "—", pmName(s.payMethod), s.items.length, moneyNum(s.total), moneyNum(s.profit)]);
+      const pmTxt = s.payMethod2 ? `${pmName(s.payMethod)} + ${pmName(s.payMethod2)}` : pmName(s.payMethod);
+      const mixTxt = s.payMethod2 ? `${moneyNum(s.pm1Amount || 0)} + ${moneyNum(s.pm2Amount || 0)}` : "";
+      const discTxt = s.discountMode === "item" ? "Por ítem" : s.discountMode === "percent" ? `${s.discountPct || 0}%` : "—";
+      salesRows.push([fDateTime(s.date), s.client || "—", pmTxt, mixTxt, discTxt, moneyNum(s.discountAmount || 0), moneyNum(s.total), moneyNum(s.profit)]);
     });
     sheets.push({ name: "Ventas", rows: salesRows });
 
@@ -1542,9 +1656,9 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
     sheets.push({ name: "Productos", rows: topRows });
 
     // Purchases sheet
-    const purchRows = [["Fecha", "Proveedor", "Factura", "Artículos", "Total"]];
+    const purchRows = [["Fecha", "Proveedor", "Factura", "Tipo", "Artículos", "Total"]];
     [...pP].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach(p => {
-      purchRows.push([fDateTime(p.date), p.supplier, p.invoiceNum || "—", p.items.length, moneyNum(p.total)]);
+      purchRows.push([fDateTime(p.date), p.supplier, p.invoiceNum || "—", p.isReposition ? "Reposición" : "Normal", p.items.length, moneyNum(p.total)]);
     });
     sheets.push({ name: "Compras", rows: purchRows });
 
@@ -1556,10 +1670,10 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
     sheets.push({ name: "Gastos", rows: expRows });
 
     // Stock sheet
-    const stockRows = [["Artículo", "Categoría", "Stock", "Mínimo", "P.Compra", "P.Venta", "Margen%", "Estado"]];
+    const stockRows = [["Artículo", "Categoría", "Stock", "Mínimo", "P.Compra", "IVA%", "P.Venta", "Margen%", "Estado"]];
     articles.forEach(a => {
       const st = a.stock <= 0 && a.purchasePrice > 0 ? "Sin Stock" : a.stock <= (a.minStock || 5) && a.purchasePrice > 0 ? "Bajo" : "OK";
-      stockRows.push([a.name, a.category, moneyNum(a.stock), a.minStock || 5, moneyNum(a.purchasePrice), moneyNum(a.salePrice), a.marginPercent, st]);
+      stockRows.push([a.name, a.category, moneyNum(a.stock), a.minStock || 5, moneyNum(a.purchasePrice), a.iva ?? 21, moneyNum(a.salePrice), a.marginPercent, st]);
     });
     sheets.push({ name: "Inventario", rows: stockRows });
 
@@ -1570,7 +1684,7 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
         <div className="tabs" style={{ marginBottom: 0 }}>
-          {[["pnl", "P&L"], ["sales-r", "Ventas"], ["purch-r", "Compras"], ["exp-r", "Gastos"], ["stock-r", "Stock"]].map(([id, l]) => (
+          {[["pnl", "P&L"], ["sales-r", "Ventas"], ["purch-r", "Compras"], ["exp-r", "Gastos"], ["merma-r", "Merma"], ["devol-r", "Devoluciones"], ["desc-r", "Descuentos"], ["precios-r", "Precios"], ["stock-r", "Stock"]].map(([id, l]) => (
             <div key={id} className={`tab ${tab === id ? "on" : ""}`} onClick={() => setTab(id)}>{l}</div>
           ))}
         </div>
@@ -1595,6 +1709,7 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
             <div className="card-b">
               {[
                 { label: "Ingresos por Ventas", val: money(rev), color: "var(--ac)", bold: false, bg: false },
+                ...(totalDiscounts > 0 ? [{ label: "(-) Descuentos Otorgados", val: "- " + money(totalDiscounts), color: "var(--rd)", bold: false, bg: false }] : []),
                 { label: "(-) Costo de Mercadería Vendida", val: "- " + money(cost), color: "var(--tx2)", bold: false, bg: false },
                 { label: "= Ganancia Bruta", val: money(prof), color: "var(--gn)", bold: true, bg: "var(--bg3)" },
                 { label: "", val: "", color: "", bold: false, bg: false, spacer: true },
@@ -1605,6 +1720,18 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
                 { label: "(-) Total Gastos Fijos", val: "- " + money(gastosFijos), color: "var(--rd)", bold: false, bg: false },
                 { label: "(-) Total Gastos Variables", val: "- " + money(gastosVar), color: "var(--rd)", bold: false, bg: false },
                 { label: "= Total Gastos Operativos", val: "- " + money(totalGastos), color: "var(--rd)", bold: true, bg: "var(--rdL)" },
+                { label: "", val: "", color: "", bold: false, bg: false, spacer: true },
+                { label: "MERMA / PÉRDIDAS", val: "", color: "var(--tx3)", bold: false, bg: false, header: true },
+                { label: "   Merma por Corte (pérdida)", val: "- " + money(mermaCorteTotal), color: "var(--rd)", bold: false, bg: false, indent: true },
+                { label: "   Merma por Vencimiento", val: "- " + money(mermaVencTotal), color: "var(--rd)", bold: false, bg: false, indent: true },
+                { label: "   Merma Aprovechada (informativo)", val: money(mermaAprovVal), color: "#7C3AED", bold: false, bg: false, indent: true },
+                { label: "= Total Merma (pérdida)", val: "- " + money(mermaTotalLoss), color: "var(--rd)", bold: true, bg: "#FEECEC" },
+                { label: "", val: "", color: "", bold: false, bg: false, spacer: true },
+                { label: "DEVOLUCIONES A PROVEEDOR", val: "", color: "var(--tx3)", bold: false, bg: false, header: true },
+                { label: "   Pendientes (suspendido)", val: money(devolPendVal), color: "var(--yw)", bold: false, bg: false, indent: true },
+                { label: "   Con Crédito (reduce costo)", val: "+ " + money(devolCredVal), color: "var(--gn)", bold: false, bg: false, indent: true },
+                { label: "   Repuesto (sin impacto — compra nueva)", val: money(devolRepVal), color: "var(--tx3)", bold: false, bg: false, indent: true },
+                ...(expRepos > 0 ? [{ label: "   Compras de reposición (no suman al costo)", val: money(expRepos), color: "#7C3AED", bold: false, bg: false, indent: true }] : []),
                 { label: "", val: "", color: "", bold: false, bg: false, spacer: true },
                 { label: "= RESULTADO NETO", val: money(netResult), color: netResult >= 0 ? "var(--gn)" : "var(--rd)", bold: true, bg: netResult >= 0 ? "var(--gnL)" : "var(--rdL)", final: true },
               ].filter(r => !r.spacer || gastoCats.length > 0).map((r, i) => {
@@ -1624,7 +1751,7 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
             </div>
           </div>
           <div style={{ marginTop: 12, fontSize: 11, color: "var(--tx3)", textAlign: "right" }}>
-            Ref: Compras a proveedores del período: {money(exp)} ({pP.length} facturas)
+            Ref: Compras normales: {money(exp)} ({pPNormal.length} fact.) · Reposiciones: {money(expRepos)} ({pPRepos.length} fact.)
           </div>
         </div>
       )}
@@ -1746,6 +1873,190 @@ function ReportsPage({ articles, sales, purchases, expenses, payMethods }) {
           </div>
         </div>
       )}
+
+      {tab === "merma-r" && (
+        <div>
+          <div className="kpi-g">
+            <div className="kpi kpi-r"><div className="kpi-l">Pérdida Total</div><div className="kpi-val" style={{ color: "var(--rd)" }}>{money(mermaTotalLoss)}</div><div className="kpi-s">{pM.length} registros</div></div>
+            <div className="kpi kpi-y"><div className="kpi-l">Merma Corte</div><div className="kpi-val">{money(mermaCorteTotal)}</div><div className="kpi-s">{mermaCorte.length} cierres</div></div>
+            <div className="kpi kpi-o"><div className="kpi-l">Merma Vencimiento</div><div className="kpi-val">{money(mermaVencTotal)}</div><div className="kpi-s">{mermaVenc.length} registros</div></div>
+            <div className="kpi kpi-v"><div className="kpi-l">Aprovechada</div><div className="kpi-val" style={{ color: "#7C3AED" }}>{money(mermaAprovVal)}</div><div className="kpi-s">Valor insumos</div></div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div className="card">
+              <div className="card-h"><h3>Merma por Artículo (Pérdida)</h3></div>
+              <div className="card-b">
+                {mermaByArt.length === 0 ? <div className="empty"><p>Sin mermas en este período</p></div> :
+                  <div className="bar-c">{mermaByArt.slice(0, 10).map((a, i) => (
+                    <div className="bar-r" key={i}><div className="bar-l" title={a.name}>{a.name}</div><div className="bar-t"><div className="bar-f ac" style={{ width: Math.max(8, (a.lossVal / maxMermaArt) * 100) + "%" }}></div></div><div className="bar-v">{money(a.lossVal)}</div></div>
+                  ))}</div>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-h"><h3>Detalle por Artículo</h3></div>
+              <div style={{ padding: 0 }}>
+                {mermaByArt.length === 0 ? <div className="empty"><p>Sin datos</p></div> :
+                  <table><thead><tr><th>Artículo</th><th>Perdido</th><th>Aprovech.</th><th>Pérdida $</th><th>Registros</th></tr></thead>
+                    <tbody>{mermaByArt.map((a, i) => (
+                      <tr key={i}><td style={{ fontWeight: 500 }}>{a.name}</td><td>{a.lostQty.toFixed(2)}</td><td style={{ color: "#7C3AED" }}>{a.aprovQty.toFixed(2)}</td><td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(a.lossVal)}</td><td>{a.count}</td></tr>
+                    ))}</tbody></table>}
+              </div>
+            </div>
+          </div>
+
+          <div className="card" style={{ marginTop: 18 }}>
+            <div className="card-h"><h3>Corte vs Vencimiento</h3></div>
+            <div className="card-b">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+                <div style={{ textAlign: "center", padding: 20, background: "var(--rdL)", borderRadius: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--tx3)", marginBottom: 4 }}>CORTE</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: "var(--rd)", fontFamily: "'Fraunces',serif" }}>{money(mermaCorteTotal)}</div>
+                  <div style={{ fontSize: 11, color: "var(--tx3)", marginTop: 4 }}>{mermaCorte.length} cierres</div>
+                </div>
+                <div style={{ textAlign: "center", padding: 20, background: "#FFF7ED", borderRadius: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--tx3)", marginBottom: 4 }}>VENCIMIENTO</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: "#C2410C", fontFamily: "'Fraunces',serif" }}>{money(mermaVencTotal)}</div>
+                  <div style={{ fontSize: 11, color: "var(--tx3)", marginTop: 4 }}>{mermaVenc.length} registros</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "devol-r" && (
+        <div>
+          <div className="kpi-g">
+            <div className="kpi kpi-o"><div className="kpi-l">Total Devuelto</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{money(devolTotal)}</div><div className="kpi-s">{pD.length} devoluciones</div></div>
+            <div className="kpi kpi-y"><div className="kpi-l">Pendientes</div><div className="kpi-val">{money(devolPendVal)}</div><div className="kpi-s">{devolPend.length} · Suspendido</div></div>
+            <div className="kpi kpi-v"><div className="kpi-l">Con Crédito</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(devolCredVal)}</div><div className="kpi-s">{devolCred.length} · Reduce costo</div></div>
+            <div className="kpi kpi-r"><div className="kpi-l">Repuestos</div><div className="kpi-val">{money(devolRepVal)}</div><div className="kpi-s">{devolRep.length} · Compra nueva</div></div>
+          </div>
+          <div className="card"><div style={{ padding: 0 }}><div className="tw">
+            <table>
+              <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículo</th><th>Cant.</th><th>Valor</th><th>Estado</th></tr></thead>
+              <tbody>
+                {pD.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>Sin devoluciones</p></div></td></tr> :
+                  pD.map(d => (d.items || []).map((it, i) => (
+                    <tr key={d.id + "-" + i}>
+                      <td style={{ fontSize: 12 }}>{fDateTime(d.date)}</td>
+                      <td style={{ fontWeight: 500 }}>{d.supplier}</td>
+                      <td>{d.invoiceNum || "—"}</td>
+                      <td>{it.articleName}</td>
+                      <td>{it.devQty} {it.unit}</td>
+                      <td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(it.devQty * (it.unitCost || 0))}</td>
+                      <td><span className={`badge ${d.status === "pendiente" ? "b-yw" : d.status === "credito" ? "b-ac" : "b-gn"}`}>{d.status === "pendiente" ? "Pendiente" : d.status === "credito" ? "Crédito" : "Repuesto"}</span></td>
+                    </tr>
+                  )))}
+              </tbody>
+            </table>
+          </div></div></div>
+        </div>
+      )}
+
+      {tab === "desc-r" && (
+        <div>
+          <div className="kpi-g">
+            <div className="kpi kpi-r"><div className="kpi-l">Total Descuentos</div><div className="kpi-val" style={{ color: "var(--rd)" }}>{money(totalDiscounts)}</div><div className="kpi-s">{pS.filter(s => s.discountAmount > 0).length} ventas con descuento</div></div>
+            <div className="kpi kpi-y"><div className="kpi-l">Por Ítem</div><div className="kpi-val">{money(discItemTotal)}</div><div className="kpi-s">{pS.filter(s => s.discountMode === "item").length} ventas</div></div>
+            <div className="kpi kpi-o"><div className="kpi-l">Por % Total</div><div className="kpi-val">{money(discPctTotal)}</div><div className="kpi-s">{pS.filter(s => s.discountMode === "percent").length} ventas</div></div>
+            <div className="kpi kpi-v"><div className="kpi-l">% sobre Ventas</div><div className="kpi-val">{rev > 0 ? (totalDiscounts / (rev + totalDiscounts) * 100).toFixed(1) : 0}%</div><div className="kpi-s">Impacto en ingresos</div></div>
+          </div>
+          <div className="card">
+            <div className="card-h"><h3>Impacto de Descuentos</h3></div>
+            <div className="card-b">
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+                <div style={{ textAlign: "center", padding: 20, background: "var(--bg3)", borderRadius: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--tx3)", marginBottom: 4 }}>SIN DESCUENTO</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: "var(--ac)", fontFamily: "'Fraunces',serif" }}>{money(rev + totalDiscounts)}</div>
+                  <div style={{ fontSize: 11, color: "var(--tx3)", marginTop: 4 }}>Lo que se hubiera cobrado</div>
+                </div>
+                <div style={{ textAlign: "center", padding: 20, background: "var(--gnL)", borderRadius: 10 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "var(--tx3)", marginBottom: 4 }}>CON DESCUENTO</div>
+                  <div style={{ fontSize: 24, fontWeight: 700, color: "var(--gn)", fontFamily: "'Fraunces',serif" }}>{money(rev)}</div>
+                  <div style={{ fontSize: 11, color: "var(--tx3)", marginTop: 4 }}>Lo que se cobró realmente</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "precios-r" && (() => {
+        const allHistory = priceArtId ? getPriceHistory(priceArtId, purchases) : [];
+        const filteredH = allHistory.filter(h =>
+          (!priceProv || h.supplier === priceProv) &&
+          (period === "all" || (() => { const now = new Date(), start = new Date(); if (period === "today") start.setHours(0,0,0,0); else if (period === "week") start.setDate(now.getDate()-7); else if (period === "month") start.setMonth(now.getMonth()-1); return new Date(h.date) >= start; })())
+        );
+        const prices = filteredH.map(h => h.price);
+        const minP = prices.length > 0 ? Math.min(...prices) : 0;
+        const maxP = prices.length > 0 ? Math.max(...prices) : 0;
+        const avgP = prices.length > 0 ? prices.reduce((a,b) => a+b, 0) / prices.length : 0;
+        const varTotal = prices.length > 1 ? ((prices[prices.length-1] - prices[0]) / prices[0] * 100) : 0;
+        const suppliers = [...new Set(allHistory.map(h => h.supplier))].sort();
+
+        return (
+          <div>
+            <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+              <select className="fs" style={{ width: "auto", minWidth: 200 }} value={priceArtId} onChange={e => setPriceArtId(e.target.value)}>
+                <option value="">Seleccioná un artículo...</option>
+                {articles.filter(a => a.purchasePrice > 0).sort((a,b) => a.name.localeCompare(b.name)).map(a => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+              {suppliers.length > 1 && (
+                <select className="fs" style={{ width: "auto" }} value={priceProv} onChange={e => setPriceProv(e.target.value)}>
+                  <option value="">Todos los proveedores</option>
+                  {suppliers.map(s => <option key={s}>{s}</option>)}
+                </select>
+              )}
+            </div>
+
+            {!priceArtId ? (
+              <div className="card"><div className="card-b"><div className="empty"><p>Seleccioná un artículo para ver la evolución de precios</p></div></div></div>
+            ) : filteredH.length === 0 ? (
+              <div className="card"><div className="card-b"><div className="empty"><p>No hay compras registradas para este artículo en el período</p></div></div></div>
+            ) : (
+              <>
+                <div className="kpi-g">
+                  <div className="kpi kpi-v"><div className="kpi-l">Precio Más Bajo</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(minP)}</div></div>
+                  <div className="kpi kpi-r"><div className="kpi-l">Precio Más Alto</div><div className="kpi-val" style={{ color: "var(--rd)" }}>{money(maxP)}</div></div>
+                  <div className="kpi kpi-o"><div className="kpi-l">Promedio</div><div className="kpi-val">{money(avgP)}</div><div className="kpi-s">{filteredH.length} compras</div></div>
+                  <div className={`kpi ${varTotal > 0 ? "kpi-r" : varTotal < 0 ? "kpi-v" : "kpi-o"}`}><div className="kpi-l">Variación Total</div><div className="kpi-val" style={{ color: varTotal > 0 ? "var(--rd)" : varTotal < 0 ? "var(--gn)" : "var(--tx)" }}>{varTotal >= 0 ? "+" : ""}{varTotal.toFixed(1)}%</div></div>
+                </div>
+                <div className="card">
+                  <div className="card-h"><h3>Evolución de Precios — {articles.find(a => a.id === priceArtId)?.name}</h3></div>
+                  <div style={{ padding: 0 }}><div className="tw">
+                    <table>
+                      <thead><tr><th>Fecha</th><th>Proveedor</th><th>Precio</th><th>Variación</th></tr></thead>
+                      <tbody>
+                        {filteredH.map((h, i) => {
+                          const prev = i > 0 ? filteredH[i-1] : null;
+                          const diff = prev ? h.price - prev.price : 0;
+                          const pct = prev && prev.price > 0 ? (diff / prev.price * 100) : 0;
+                          return (
+                            <tr key={i}>
+                              <td style={{ fontSize: 12 }}>{fDateTime(h.date)}</td>
+                              <td style={{ fontWeight: 500 }}>{h.supplier}</td>
+                              <td style={{ fontWeight: 600 }}>{money(h.price)}<span style={{ fontSize: 10, color: "var(--tx3)" }}>/{h.unit}</span></td>
+                              <td>{!prev ? <span style={{ color: "var(--tx3)", fontSize: 12 }}>—</span> : (
+                                <span style={{ fontWeight: 600, fontSize: 12, color: diff > 0 ? "var(--rd)" : diff < 0 ? "var(--gn)" : "var(--tx3)" }}>
+                                  {diff > 0 ? "▲" : diff < 0 ? "▼" : "="} {money(Math.abs(diff))} ({pct >= 0 ? "+" : ""}{pct.toFixed(1)}%)
+                                </span>
+                              )}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div></div>
+                </div>
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       {tab === "stock-r" && (
         <div>

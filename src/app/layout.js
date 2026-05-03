@@ -1,5 +1,5 @@
 import './globals.css';
-export const metadata = { title: 'La Fiambrería - Sistema de Gestión', description: 'Gestión integral de fiambrería' };
+export const metadata = { title: 'La Fiambrería', description: 'Sistema de Gestión' };
 export default function RootLayout({ children }) {
   return (
     <html lang="es">

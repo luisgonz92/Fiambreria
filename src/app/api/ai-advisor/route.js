@@ -9,7 +9,7 @@ export async function POST(request) {
       headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514', max_tokens: 1500,
-        messages: [{ role: 'user', content: `${prompt}\n\n${dataContext}\n\nResponde en español argentino, de forma directa y práctica. Usá viñetas y secciones claras. No uses markdown con # ni **, solo texto plano. Sé específico con nombres de productos y números reales.` }]
+        messages: [{ role: 'user', content: `${prompt}\n\n${dataContext}\n\nResponde en español argentino, directo y práctico. Viñetas y secciones claras. Sin markdown. Específico con nombres y números reales.` }]
       }),
     });
     if (!response.ok) return NextResponse.json({ error: 'Error calling AI' }, { status: 500 });

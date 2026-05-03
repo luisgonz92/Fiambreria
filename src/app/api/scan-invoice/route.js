@@ -12,7 +12,7 @@ export async function POST(request) {
         model: 'claude-sonnet-4-20250514', max_tokens: 1500,
         messages: [{ role: 'user', content: [
           { type: 'image', source: { type: 'base64', media_type: mimeType || 'image/jpeg', data: image } },
-          { type: 'text', text: 'Analiza esta imagen de una factura de compra de una fiambrería/almacén argentino. Extraé los datos en formato JSON puro sin backticks. Estructura: {"supplier":"","invoiceNum":"","items":[{"name":"","quantity":1,"unit":"kg","unitCost":0}]}. unit: kg/g/und/lt. Respondé SOLO el JSON.' }
+          { type: 'text', text: 'Analiza esta factura de compra de fiambrería argentina. JSON puro sin backticks: {"supplier":"","invoiceNum":"","items":[{"name":"","quantity":1,"unit":"kg","unitCost":0}]}. unit: kg/g/und/lt. Solo JSON.' }
         ]}]
       }),
     });
