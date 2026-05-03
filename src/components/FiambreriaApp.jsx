@@ -600,123 +600,70 @@ function PurchasesPage({ articles, purchases, refresh, devoluciones, notify }) {
     notify("Compra eliminada · Stock revertido");
   };
 
-  const totalPend = sorted.filter(d => d.status === "pendiente").reduce((s, d) => s + (d.totalValue || 0), 0);
-  const totalCred = sorted.filter(d => d.status === "credito").reduce((s, d) => s + (d.totalValue || 0), 0);
-  const totalRep = sorted.filter(d => d.status === "repuesto").reduce((s, d) => s + (d.totalValue || 0), 0);
+  const openEdit = (p) => {
+    if (isPrevMonth(p.date)) { notify("⚠ No se puede editar: período cerrado"); return; }
+    setEditPurch(p); setModal(true);
+  };
+
+  const pendingDevols = (devoluciones || []).filter(d => d.status === "pendiente" || d.status === "credito");
 
   return (
     <div>
-      <div className="kpi-g">
-        <div className="kpi kpi-o"><div className="kpi-l">Total Devoluciones</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{devoluciones.length}</div><div className="kpi-s">{money(totalPend + totalCred + totalRep)}</div></div>
-        <div className="kpi kpi-y"><div className="kpi-l">Pendientes</div><div className="kpi-val">{money(totalPend)}</div><div className="kpi-s">{sorted.filter(d => d.status === "pendiente").length} · Monto suspendido</div></div>
-        <div className="kpi kpi-v"><div className="kpi-l">Con Crédito</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(totalCred)}</div><div className="kpi-s">Reduce costo compras</div></div>
-        <div className="kpi kpi-r"><div className="kpi-l">Repuestos</div><div className="kpi-val">{money(totalRep)}</div><div className="kpi-s">{sorted.filter(d => d.status === "repuesto").length} reposiciones</div></div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
+        <div />
+        <button className="btn btn-p" onClick={() => { setEditPurch(null); setModal(true); }}>{I.plus} Nueva Compra</button>
       </div>
-
-      {!showForm && (
-        <div style={{ marginBottom: 18 }}>
-          <label className="fl">Seleccioná una factura de compra para devolver</label>
-          <div style={{ display: "flex", gap: 10, marginTop: 6, marginBottom: 8, flexWrap: "wrap" }}>
-            <input className="fi" placeholder="Buscar por proveedor o nº factura..." value={facSearch} onChange={e => setFacSearch(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
-            <select className="fs" style={{ width: "auto" }} value={provFilter} onChange={e => setProvFilter(e.target.value)}>
-              <option value="">Todos los proveedores</option>
-              {[...new Set(purchases.map(p => p.supplier))].sort().map(s => <option key={s}>{s}</option>)}
-            </select>
-          </div>
-          <div style={{ display: "grid", gap: 8, maxHeight: 300, overflowY: "auto" }}>
-            {purchases.length === 0 ? <div className="empty"><p>No hay compras registradas</p></div> :
-              [...purchases]
-                .filter(p => (!provFilter || p.supplier === provFilter) && (!facSearch || (p.supplier || "").toLowerCase().includes(facSearch.toLowerCase()) || (p.invoiceNum || "").toLowerCase().includes(facSearch.toLowerCase())))
-                .sort((a, b) => new Date(b.date) - new Date(a.date))
-                .map(p => (
-                <div key={p.id} onClick={() => initDev(p)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--br)", cursor: "pointer", transition: "all .15s", fontSize: 13 }}
-                  onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ac)"} onMouseLeave={e => e.currentTarget.style.borderColor = "var(--br)"}>
-                  <div><span style={{ fontWeight: 600 }}>{p.supplier}</span> <span style={{ color: "var(--tx3)", fontSize: 11 }}>· {p.invoiceNum || "S/N"} · {fDate(p.date)}</span></div>
-                  <span style={{ fontWeight: 600 }}>{money(p.total)}</span>
-                </div>
-              ))}
-          </div>
-        </div>
-      )}
-
-      {showForm && selPurch && (
-        <div className="card" style={{ marginBottom: 18 }}>
-          <div className="card-h"><h3>Devolver de: {selPurch.supplier} · {selPurch.invoiceNum || "S/N"}</h3><button className="btn-i" onClick={() => setShowForm(false)}>{I.x}</button></div>
-          <div className="card-b">
-            <div className="merma-grid">
-              <div className="merma-row merma-row-h" style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px" }}><span></span><span>Artículo</span><span>Stock</span><span>Comprado</span><span>Devolver</span><span>Valor</span></div>
-              {devItems.map((it, idx) => {
-                const currentArt = articles.find(a => a.id === it.articleId);
-                const currentStock = currentArt?.stock ?? 0;
-                return (
-                <div className="merma-row" key={idx} style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px", opacity: it.selected ? 1 : 0.5 }}>
-                  <input type="checkbox" checked={it.selected} onChange={() => toggleItem(idx)} style={{ accentColor: "var(--ac)" }} />
-                  <span style={{ fontWeight: 500 }}>{it.articleName}</span>
-                  <span style={{ fontSize: 11, color: currentStock <= 0 ? "var(--rd)" : "var(--gn)", fontWeight: 600 }}>{currentStock.toFixed(2)}</span>
-                  <span style={{ fontSize: 12 }}>{it.quantity} {it.unit}</span>
-                  <input className="fi" type="number" step="0.01" min="0.01" max={Math.min(it.quantity, currentStock)} value={it.devQty || ""} onChange={e => updDevQty(idx, Math.min(it.quantity, currentStock, parseFloat(e.target.value) || 0))} disabled={!it.selected} style={{ padding: "4px 7px", fontSize: 12 }} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--rd)" }}>{it.selected && it.devQty > 0 ? money(it.devQty * (it.unitCost || 0)) : "—"}</span>
-                </div>);
-              })}
-            </div>
-            <div className="fg" style={{ marginTop: 10 }}><label className="fl">Observaciones</label><input className="fi" value={devObs} onChange={e => setDevObs(e.target.value)} placeholder="Motivo de devolución (opcional)" /></div>
-            <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
-              <button className="btn btn-s" onClick={() => setShowForm(false)}>Cancelar</button>
-              <button className="btn btn-p" onClick={saveDev}>Registrar Devolución</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* LIST */}
       <div className="card"><div style={{ padding: 0 }}><div className="tw">
         <table>
-          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Valor</th><th>Estado</th><th style={{ width: 80 }}></th></tr></thead>
+          <thead><tr><th>#</th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Total</th><th style={{ width: 110 }}></th></tr></thead>
           <tbody>
-            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay devoluciones registradas</p></div></td></tr> :
-              sorted.map(d => {
-                const linkedPurch = purchases.find(p => p.devolucionId === d.id);
-                return (
-                <tr key={d.id}>
-                  <td style={{ fontSize: 12 }}>{fDateTime(d.date)}</td>
-                  <td style={{ fontWeight: 500 }}>{d.supplier}</td>
-                  <td>{d.invoiceNum || "—"}</td>
-                  <td style={{ fontSize: 11 }}>
-                    {(d.items || []).map(it => `${it.articleName} (${it.devQty})`).join(", ")}
-                    {linkedPurch && (
-                      <div style={{ fontSize: 10, color: "#7C3AED", marginTop: 2 }}>🔗 Repuesta con compra del {fDate(linkedPurch.date)}</div>
-                    )}
-                  </td>
-                  <td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(d.totalValue)}</td>
-                  <td>
-                    {statusEdit === d.id ? (
-                      <div style={{ display: "flex", gap: 4 }}>
-                        {STATUSES.map(st => (
-                          <button key={st.value} className={`btn btn-sm ${d.status === st.value ? "btn-p" : "btn-s"}`} onClick={() => { onStatusChange(d.id, st.value); setStatusEdit(null); }} style={{ padding: "3px 8px", fontSize: 10 }}>{st.label}</button>
-                        ))}
-                      </div>
-                    ) : (
-                      <span className={`badge ${STATUSES.find(st => st.value === d.status)?.css || "b-yw"}`} onClick={() => !linkedPurch ? setStatusEdit(d.id) : null} style={{ cursor: linkedPurch ? "default" : "pointer" }}>
-                        {STATUSES.find(st => st.value === d.status)?.label || d.status}
-                      </span>
-                    )}
-                  </td>
+            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay compras. Registrá tu primera factura.</p></div></td></tr> :
+              sorted.map((p, i) => (
+                <tr key={p.id}>
+                  <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{sorted.length - i}</td>
+                  <td style={{ fontSize: 12 }}>{fDateTime(p.date)}</td>
+                  <td style={{ fontWeight: 500 }}>{p.supplier}</td>
+                  <td>{p.invoiceNum || "—"}</td>
+                  <td>{p.items.length}</td>
+                  <td style={{ fontWeight: 600 }}>{money(p.total)}</td>
                   <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    {isPrevMonth(d.date) ? <span className="lock-badge">{I.lock}</span> :
-                      delConfirm === d.id ? (
-                        <><button className="btn-i" onClick={() => handleDel(d.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                    <button className="btn-i" onClick={() => setView(p)}>{I.eye}</button>
+                    {isPrevMonth(p.date) ? <span className="lock-badge">{I.lock} Cerrado</span> : (<>
+                      <button className="btn-i" onClick={() => openEdit(p)}>{I.edit}</button>
+                      {delConfirm === p.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(p.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
                         <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
-                      ) : (<button className="btn-i" onClick={() => setDelConfirm(d.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>)}
+                      ) : (
+                        <button className="btn-i" onClick={() => setDelConfirm(p.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>
+                      )}
+                    </>)}
                   </div></td>
-                </tr>);
-              })}
+                </tr>
+              ))}
           </tbody>
         </table>
       </div></div></div>
 
-      <div style={{ marginTop: 16, padding: 16, background: "var(--bg3)", borderRadius: 10, fontSize: 12, color: "var(--tx3)" }}>
-        <strong style={{ color: "var(--tx2)" }}>Impacto financiero:</strong> Las devoluciones "Pendientes" quedan como monto suspendido. Las "Con Crédito" reducen el costo de compras del período. Las "Repuestas" se cargan como compra nueva vinculada en el módulo de Compras.
-      </div>
+      {modal && <PurchaseModal articles={articles} purchases={purchases} editData={editPurch} pendingDevols={pendingDevols} onSave={handleSave} onClose={() => { setModal(false); setEditPurch(null); }} />}
+      {view && (
+        <div className="mo" onClick={() => setView(null)}>
+          <div className="md" onClick={e => e.stopPropagation()}>
+            <div className="md-h"><h2>Detalle de Compra</h2><button className="btn-i" onClick={() => setView(null)}>{I.x}</button></div>
+            <div className="md-b">
+              <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 13, color: "var(--tx2)", flexWrap: "wrap" }}>
+                <span>Fecha: <strong>{fDateTime(view.date)}</strong></span>
+                <span>Proveedor: <strong>{view.supplier}</strong></span>
+                <span>Factura: <strong>{view.invoiceNum || "—"}</strong></span>
+              </div>
+              <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Unidad</th><th>Costo Unit.</th><th>Subtotal</th></tr></thead>
+                <tbody>{view.items.map((it, i) => (
+                  <tr key={i}><td style={{ fontWeight: 500 }}>{it.articleName}</td><td>{it.quantity}</td><td>{unitLabel(it.unit)}</td><td>{money(it.unitCost)}</td><td style={{ fontWeight: 600 }}>{money(it.subtotal)}</td></tr>
+                ))}</tbody></table>
+              <div className="tt" style={{ marginTop: 14 }}><span className="tt-l">Total Compra</span><span className="tt-v">{money(view.total)}</span></div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
