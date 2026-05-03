@@ -345,7 +345,7 @@ function InventoryPage({ articles, purchases, refresh, notify }) {
     } catch(e) { notify("Error: "+e.message); }
   };
 
-  const handleDel = (id) => { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); setDelConfirm(null); };
+  const handleDel = async (id) => { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); setDelConfirm(null); };
 
   const stockStatus = (a) => {
     if (a.stock <= 0 && a.purchasePrice > 0) return "out";
