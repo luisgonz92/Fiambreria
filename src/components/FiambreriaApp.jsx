@@ -15,6 +15,8 @@ const EXP_TYPE = [{ value: "fijo", label: "Fijo" }, { value: "variable", label: 
 const UNITS = [{ value: "kg", label: "Kilogramo" }, { value: "g", label: "Gramo" }, { value: "und", label: "Unidad" }, { value: "lt", label: "Litro" }];
 const unitLabel = (v) => UNITS.find(u => u.value === v)?.label || v;
 const IVA_RATES = [{ value: 0, label: "0% (Exento)" }, { value: 10.5, label: "10.5%" }, { value: 21, label: "21%" }, { value: 27, label: "27%" }];
+const calcSale = (pp, iva, margin) => Math.round((pp || 0) * (1 + (iva || 0) / 100) * (1 + (margin || 0) / 100) * 100) / 100;
+
 const getPriceHistory = (articleId, purchases) => {
   const entries = [];
   (purchases || []).forEach(p => {
@@ -26,7 +28,6 @@ const getPriceHistory = (articleId, purchases) => {
   });
   return entries.sort((a, b) => new Date(a.date) - new Date(b.date));
 };
-const calcSale = (pp, iva, margin) => Math.round((pp || 0) * (1 + (iva || 0) / 100) * (1 + (margin || 0) / 100) * 100) / 100;
 
 // ============ SUPABASE DB LAYER ============
 const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: Number(r.iva)||21, isCorte: !!r.is_corte, category: r.category_name||r.category||'Otros' });
@@ -356,7 +357,7 @@ function InventoryPage({ articles, purchases, refresh, notify }) {
     } catch(e) { notify("Error: "+e.message); }
   };
 
-  const handleDel = async (id) => { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); setDelConfirm(null); };
+  const handleDel = (id) => { await db.deleteArticle(id); await refresh(); notify("Artículo eliminado"); setDelConfirm(null); };
 
   const stockStatus = (a) => {
     if (a.stock <= 0 && a.purchasePrice > 0) return "out";
@@ -719,6 +720,871 @@ function PurchasesPage({ articles, purchases, refresh, devoluciones, notify }) {
     </div>
   );
 }
+
+function PurchaseModal({ articles, purchases, editData, pendingDevols, onSave, onClose }) {
+  const [supplier, setSupplier] = useState(editData?.supplier || "");
+  const [invoiceNum, setInvoiceNum] = useState(editData?.invoiceNum || "");
+  const [items, setItems] = useState(editData ? editData.items.map(it => ({ ...it, _key: uid() })) : []);
+  const [q, setQ] = useState("");
+  const [showDD, setShowDD] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanPreview, setScanPreview] = useState(null);
+  const [scanMsg, setScanMsg] = useState(null);
+  const [newArticles, setNewArticles] = useState([]);
+  const [dragging, setDragging] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [newArt, setNewArt] = useState({ name: "", category: "Otros", units: ["kg"], iva: 21, marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 });
+  const [linkIdx, setLinkIdx] = useState(-1);
+  const [linkQ, setLinkQ] = useState("");
+  const [devolucionId, setDevolucionId] = useState(editData?.devolucionId || "");
+
+  const allArticles = useMemo(() => [...articles, ...newArticles], [articles, newArticles]);
+  const avail = q ? allArticles.filter(a => (a.name || "").toLowerCase().includes(q.toLowerCase()) && !items.find(i => i.articleId === a.id)) : [];
+
+  const addExisting = (id, name, units, price, iva) => {
+    const iv = iva ?? 21;
+    setItems(prev => [...prev, { _key: uid(), articleId: id, articleName: name, unit: (units || ["kg"])[0], quantity: 1, unitCost: price || 0, subtotal: (price || 0) * (1 + iv / 100), iva: iv, isNew: false }]);
+    setQ(""); setShowDD(false);
+  };
+
+  const updItem = (idx, key, val) => {
+    setItems(prev => prev.map((it, i) => {
+      if (i !== idx) return it;
+      const upd = { ...it, [key]: val };
+      if (key === "quantity" || key === "unitCost" || key === "iva") upd.subtotal = (upd.quantity || 0) * (upd.unitCost || 0) * (1 + (upd.iva || 0) / 100);
+      return upd;
+    }));
+    if (key === "articleName") {
+      const artId = items[idx]?.articleId;
+      const na = artId && newArticles.find(a => a.id === artId);
+      if (na) setNewArticles(prev => prev.map(a => a.id === artId ? { ...a, name: val } : a));
+    }
+  };
+
+  const doLink = (idx, a) => {
+    const iv = a.iva ?? 21;
+    setItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, articleId: a.id, articleName: a.name || "", unit: (a.units || ["kg"])[0], unitCost: a.purchasePrice || 0, subtotal: (it.quantity || 1) * (a.purchasePrice || 0) * (1 + iv / 100), iva: iv, isNew: false }));
+    setLinkIdx(-1); setLinkQ("");
+  };
+
+  const total = items.reduce((s, i) => s + (i.subtotal || 0), 0);
+  const isDupName = (name) => allArticles.some(a => (a.name || "").trim().toLowerCase() === name.trim().toLowerCase());
+
+  const handleInlineCreate = () => {
+    if (!newArt.name.trim() || isDupName(newArt.name)) return;
+    const art = { ...newArt, id: uid(), createdAt: new Date().toISOString(), salePrice: calcSale(newArt.purchasePrice, newArt.iva, newArt.marginPercent) };
+    setNewArticles(prev => [...prev, art]);
+    setItems(prev => [...prev, { _key: uid(), articleId: art.id, articleName: art.name, unit: (art.units || ["kg"])[0], quantity: 1, unitCost: art.purchasePrice || 0, subtotal: (art.purchasePrice || 0) * (1 + (art.iva || 0) / 100), iva: art.iva ?? 21, isNew: true }]);
+    setNewArt({ name: "", category: "Otros", units: ["kg"], iva: 21, marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0 });
+    setShowCreate(false);
+  };
+
+  const handleFile = async (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target.result;
+      setScanPreview(dataUrl); setScanning(true); setScanMsg("Analizando factura con IA...");
+      try {
+        const base64 = dataUrl.split(",")[1];
+        const resp = await fetch("/api/scan-invoice", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: file.type, data: base64 } },
+            { type: "text", text: `Analiza esta imagen de una factura de compra de una fiambrería/almacén argentino. Extraé los datos en formato JSON puro sin backticks. Estructura: {"supplier":"","invoiceNum":"","items":[{"name":"","quantity":1.0,"unit":"kg","unitCost":0}]}. unit: kg/g/und/lt. Precios numéricos sin $. Respondé SOLO JSON.` }
+          ]}]})
+        });
+        if (!resp.ok) throw new Error("Error al procesar");
+        const parsed = await resp.json();
+        if (parsed.supplier) setSupplier(parsed.supplier);
+        if (parsed.invoiceNum) setInvoiceNum(parsed.invoiceNum);
+        let created = 0; const newArts = [], newItems = [], currentAll = [...allArticles];
+        (parsed.items || []).forEach(pi => {
+          if (!pi.name) return;
+          let art = currentAll.find(a => (a.name||"").toLowerCase().trim() === pi.name.toLowerCase().trim());
+          if (!art) {
+            art = { id: uid(), name: pi.name.trim(), category: "Otros", units: [pi.unit || "kg"], marginPercent: 30, minStock: 5, stock: 0, purchasePrice: pi.unitCost || 0, salePrice: Math.round((pi.unitCost || 0) * 1.3 * 100) / 100, createdAt: new Date().toISOString() };
+            newArts.push(art); currentAll.push(art); created++;
+          }
+          const iv = art.iva ?? 21;
+          newItems.push({ _key: uid(), articleId: art.id, articleName: art.name, unit: pi.unit || (art.units || ["kg"])[0], quantity: pi.quantity || 1, unitCost: pi.unitCost || art.purchasePrice || 0, subtotal: (pi.quantity || 1) * (pi.unitCost || art.purchasePrice || 0) * (1 + iv / 100), iva: iv, isNew: !articles.find(a => a.id === art.id) });
+        });
+        if (newArts.length > 0) setNewArticles(prev => [...prev, ...newArts]);
+        setItems(prev => [...prev, ...newItems]);
+        setScanMsg(`${newItems.length} artículo(s) detectados${created > 0 ? ` · ${created} nuevo(s)` : ""}`);
+      } catch (err) { console.error(err); setScanMsg("Error al analizar. Cargá manualmente."); }
+      setScanning(false);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSave = () => {
+    const resolvedItems = items.map(({ isNew, _key, ...rest }) => ({
+      ...rest,
+      articleName: rest.articleName || allArticles.find(a => a.id === rest.articleId)?.name || ""
+    }));
+    onSave({ supplier, invoiceNum, items: resolvedItems, total, _newArticles: newArticles, _editId: editData?.id || null, _devolucionId: devolucionId || null });
+  };
+
+  const linkResults = linkQ ? allArticles.filter(a => (a.name || "").toLowerCase().includes(linkQ.toLowerCase())).slice(0, 6) : [];
+
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md md-lg" onClick={e => e.stopPropagation()}>
+        <div className="md-h"><h2>{editData ? "Editar" : "Registrar"} Factura de Compra</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
+        <div className="md-b">
+          {!editData && !scanning && !scanMsg && (
+            <div className={`scan-zone ${dragging ? "dragging" : ""}`}
+              onClick={() => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "image/*"; inp.capture = "environment"; inp.onchange = (ev) => handleFile(ev.target.files[0]); inp.click(); }}
+              onDrop={(ev) => { ev.preventDefault(); setDragging(false); if (ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]); }}
+              onDragOver={(ev) => { ev.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)}>
+              <div style={{ marginBottom: 8, color: "var(--ac)" }}>{I.camera}</div>
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>Escaneá tu factura con IA</div>
+              <div style={{ fontSize: 12, color: "var(--tx3)" }}>Foto o arrastrá imagen</div>
+            </div>
+          )}
+          {scanning && (
+            <div className="scan-loading">
+              {scanPreview && <img src={scanPreview} className="scan-preview" alt="" />}
+              <div className="scan-spin"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--ac)" strokeWidth="2.5" strokeLinecap="round"><path d="M21 12a9 9 0 11-6.219-8.56"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur=".8s" repeatCount="indefinite"/></path></svg></div>
+              <div className="scan-pulse" style={{ fontWeight: 600, color: "var(--ac)" }}>Analizando...</div>
+            </div>
+          )}
+          {scanMsg && !scanning && (
+            <div className="scan-result">{I.check}<span>{scanMsg}</span>
+              <button className="btn btn-sm btn-s" style={{ marginLeft: "auto" }} onClick={() => { setScanMsg(null); setScanPreview(null); }}>Escanear otra</button>
+            </div>
+          )}
+
+          <div style={{ borderTop: scanMsg || scanning ? "1px solid var(--br)" : "none", paddingTop: scanMsg || scanning ? 14 : 0, marginTop: scanMsg || scanning ? 14 : 0 }}>
+            <div className="fr">
+              <div className="fg"><label className="fl">Proveedor</label><input className="fi" value={supplier} onChange={e => setSupplier(e.target.value)} placeholder="Nombre del proveedor" /></div>
+              <div className="fg"><label className="fl">Nº Factura</label><input className="fi" value={invoiceNum} onChange={e => setInvoiceNum(e.target.value)} placeholder="Ej: FAC-0001" /></div>
+            </div>
+            {(pendingDevols || []).length > 0 && !editData && (
+              <div className="fg" style={{ marginBottom: 14 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: devolucionId ? "var(--ac)" : "var(--tx3)", marginBottom: 6 }}>
+                  ¿Es reposición de devolución?
+                </label>
+                <select className="fs" value={devolucionId} onChange={e => setDevolucionId(e.target.value)}>
+                  <option value="">No — compra normal</option>
+                  {(pendingDevols || []).map(d => (
+                    <option key={d.id} value={d.id}>Dev. {d.supplier} · {(d.items || []).map(it => it.articleName).join(", ")} · {fDate(d.date)} ({d.status === "credito" ? "Con Crédito" : "Pendiente"})</option>
+                  ))}
+                </select>
+                {devolucionId && <span style={{ fontSize: 10, color: "var(--ac)", display: "block", marginTop: 4 }}>Esta compra no sumará al costo del período y la devolución se marcará como "Repuesto"</span>}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 14 }}>
+              <div className="fg" style={{ position: "relative", flex: 1, marginBottom: 0 }}>
+                <label className="fl">Agregar Artículo existente</label>
+                <input className="fi" placeholder="Buscar artículo..." value={q}
+                  onChange={e => { setQ(e.target.value); setShowDD(true); }}
+                  onFocus={() => q && setShowDD(true)}
+                  onBlur={() => setTimeout(() => setShowDD(false), 250)} />
+                {showDD && avail.length > 0 && (
+                  <div className="dd">
+                    {avail.slice(0, 8).map(a => (
+                      <div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addExisting(a.id, a.name, a.units, a.purchasePrice, a.iva); }}>
+                        <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({(a.units || []).map(unitLabel).join(", ")})</span></span>
+                        {a.purchasePrice > 0 && <span style={{ fontSize: 12, color: "var(--tx3)" }}>Últ: {money(a.purchasePrice)}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button className="btn btn-s" style={{ whiteSpace: "nowrap", marginBottom: 0 }} onClick={() => setShowCreate(!showCreate)}>{I.plus} Crear Artículo</button>
+            </div>
+
+            {showCreate && (
+              <div className="inline-create">
+                <h4>Crear Artículo Rápido</h4>
+                <div className="fr3">
+                  <div className="fg"><label className="fl">Nombre</label><input className="fi" value={newArt.name} onChange={e => setNewArt(p => ({ ...p, name: e.target.value }))} placeholder="Nombre" />
+                    {newArt.name.trim() && isDupName(newArt.name) && <div className="dup-warn">{I.warn} Ya existe</div>}
+                  </div>
+                  <div className="fg"><label className="fl">Categoría</label><select className="fs" value={newArt.category} onChange={e => setNewArt(p => ({ ...p, category: e.target.value }))}>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select></div>
+                  <div className="fg"><label className="fl">Unidad</label><select className="fs" value={newArt.units[0]} onChange={e => setNewArt(p => ({ ...p, units: [e.target.value] }))}>{UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}</select></div>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
+                  <div className="fg"><label className="fl">P. Compra</label><input className="fi" type="number" step="0.01" min="0" value={newArt.purchasePrice || ""} onChange={e => setNewArt(p => ({ ...p, purchasePrice: parseFloat(e.target.value) || 0 }))} /></div>
+                  <div className="fg"><label className="fl">IVA %</label><select className="fs" value={newArt.iva ?? 21} onChange={e => setNewArt(p => ({ ...p, iva: parseFloat(e.target.value) }))}>{IVA_RATES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}</select></div>
+                  <div className="fg"><label className="fl">Margen %</label><input className="fi" type="number" step="1" min="0" value={newArt.marginPercent} onChange={e => setNewArt(p => ({ ...p, marginPercent: parseFloat(e.target.value) || 0 }))} /></div>
+                  <div className="fg"><label className="fl">Stock</label><input className="fi" type="number" step="0.01" min="0" value={newArt.stock || ""} onChange={e => setNewArt(p => ({ ...p, stock: parseFloat(e.target.value) || 0 }))} /></div>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button className="btn btn-p btn-sm" disabled={!newArt.name.trim() || isDupName(newArt.name)} onClick={handleInlineCreate}>{I.check} Crear y Agregar</button>
+                  <button className="btn btn-s btn-sm" onClick={() => setShowCreate(false)}>Cancelar</button>
+                </div>
+              </div>
+            )}
+
+            {items.length > 0 && (
+              <>
+                <div className="ti">
+                  <div className="ti-r ti-h" style={{ gridTemplateColumns: "2fr 60px 80px 55px 90px 90px 36px" }}><span>Artículo</span><span>Cant.</span><span>Unidad</span><span>IVA</span><span>Costo U.</span><span>Subtotal</span><span></span></div>
+                  {items.map((it, idx) => {
+                    const resolvedName = it.articleName || allArticles.find(a => a.id === it.articleId)?.name || "";
+                    const ph = getPriceHistory(it.articleId, purchases || []);
+                    const lastP = ph.length > 0 ? ph[ph.length - 1] : null;
+                    const costUp = lastP && it.unitCost > 0 && it.unitCost > lastP.price;
+                    const costDn = lastP && it.unitCost > 0 && it.unitCost < lastP.price;
+                    return (
+                    <div className="ti-r" key={it._key || it.articleId || idx} style={{ gridTemplateColumns: "2fr 60px 80px 55px 90px 90px 36px" }}>
+                      <div>
+                        {it.isNew ? (
+                          <input className="fi" value={resolvedName} onChange={e => updItem(idx, "articleName", e.target.value)} style={{ padding: "4px 7px", fontSize: 12, fontWeight: 500 }} />
+                        ) : (
+                          <div style={{ fontWeight: 500, fontSize: 12, padding: "4px 0", minHeight: 24 }}>{resolvedName}</div>
+                        )}
+                        <div style={{ display: "flex", gap: 4, alignItems: "center", marginTop: 2 }}>
+                          {it.isNew && <span className="scan-new">NUEVO</span>}
+                          <button className="btn-i" title="Vincular" onClick={() => { setLinkIdx(linkIdx === idx ? -1 : idx); setLinkQ(""); }} style={{ padding: 2, color: linkIdx === idx ? "var(--ac)" : "var(--tx3)", fontSize: 10 }}>{I.search}</button>
+                        </div>
+                        {linkIdx === idx && (
+                          <div style={{ marginTop: 4 }}>
+                            <input className="fi" placeholder="Buscar artículo..." value={linkQ} onChange={e => setLinkQ(e.target.value)} style={{ padding: "4px 8px", fontSize: 11, background: "var(--acL)", border: "1px solid var(--ac)" }} autoFocus />
+                            {linkResults.length > 0 && (
+                              <div style={{ border: "1px solid var(--br)", borderRadius: "0 0 8px 8px", background: "var(--bg2)", maxHeight: 150, overflowY: "auto" }}>
+                                {linkResults.map(a => (<div key={a.id} className="dd-i" onClick={() => doLink(idx, a)}><span style={{ fontSize: 12 }}>{a.name}</span><span style={{ fontSize: 10, color: "var(--tx3)" }}>{money(a.purchasePrice)}</span></div>))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
+                      <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>{UNITS.map(u => <option key={u.value} value={u.value}>{u.label}</option>)}</select>
+                      <select className="fs" value={it.iva ?? 21} onChange={e => updItem(idx, "iva", parseFloat(e.target.value))} style={{ padding: "5px 7px", fontSize: 11 }}>{IVA_RATES.map(r => <option key={r.value} value={r.value}>{r.value}%</option>)}</select>
+                      <div>
+                        <input className="fi" type="number" step="0.01" min="0" value={it.unitCost} onChange={e => updItem(idx, "unitCost", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12, borderColor: costUp ? "#F0B8B8" : costDn ? "#A8D5BA" : "var(--br)" }} />
+                        {lastP && <div style={{ fontSize: 9, color: costUp ? "var(--rd)" : costDn ? "var(--gn)" : "var(--tx3)", marginTop: 1 }}>Últ: {money(lastP.price)} · {fDate(lastP.date)}</div>}
+                      </div>
+                      <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
+                      <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                    </div>
+                    );
+                  })}
+                </div>
+                <div className="tt"><span className="tt-l">Total Factura</span><span className="tt-v">{money(total)}</span></div>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="md-f">
+          <button className="btn btn-s" onClick={onClose}>Cancelar</button>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+            <button className="btn btn-p" disabled={items.length === 0 || !supplier.trim() || scanning} onClick={handleSave}>{editData ? "Guardar Cambios" : "Registrar Compra"}</button>
+            {(items.length === 0 || !supplier.trim()) && !scanning && (
+              <span style={{ fontSize: 10, color: "var(--rd)", fontWeight: 500 }}>
+                {!supplier.trim() && items.length === 0 ? "Falta proveedor y artículos" : !supplier.trim() ? "⚠ Ingresá el proveedor" : "Agregá al menos un artículo"}
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ SALES ============
+function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
+  const [modal, setModal] = useState(false);
+  const [editSale, setEditSale] = useState(null);
+  const [view, setView] = useState(null);
+  const [search, setSearch] = useState("");
+  const [pmFilter, setPmFilter] = useState("");
+  const [delConfirm, setDelConfirm] = useState(null);
+  const sorted = useMemo(() => [...sales].sort((a, b) => new Date(b.date) - new Date(a.date)), [sales]);
+  const filtered = sorted.filter(s =>
+    ((s.client || "").toLowerCase().includes(search.toLowerCase()) || s.items.some(i => (i.articleName || "").toLowerCase().includes(search.toLowerCase())))
+    && (!pmFilter || s.payMethod === pmFilter)
+  );
+  const activePM = payMethods.filter(pm => pm.active);
+
+  // Helper: deduct stock for items (handles composite ingredients)
+  const deductStock = (upd, saleItems, factor) => {
+    saleItems.forEach(it => {
+      if (it.isComposite && it.ingredients) {
+        // Composite: deduct each ingredient × sale quantity
+        it.ingredients.forEach(ing => {
+          const idx = upd.findIndex(a => a.id === ing.articleId);
+          if (idx > -1) upd[idx] = { ...upd[idx], stock: Math.max(0, (upd[idx].stock || 0) + factor * (ing.qty || 0) * (it.quantity || 1)) };
+        });
+      } else {
+        const idx = upd.findIndex(a => a.id === it.articleId);
+        if (idx > -1) upd[idx] = { ...upd[idx], stock: Math.max(0, (upd[idx].stock || 0) + factor * it.quantity) };
+      }
+    });
+  };
+
+  const handleSave = async (data) => {
+    const { _editId, ...saleData } = data;
+    try {
+      if (_editId) { await db.updateSale(_editId, saleData, saleData.items); notify("Venta actualizada"); }
+      else { await db.insertSale(saleData, saleData.items); notify("Venta registrada: " + money(saleData.total)); }
+      await refresh();
+    } catch(e) { notify("Error: "+e.message); }
+    setModal(false); setEditSale(null);
+  };
+
+  const handleDel = async (id) => {
+    const s = sales.find(x => x.id === id);
+    if (!s) return;
+    if (isPrevMonth(s.date)) { notify("⚠ No se puede eliminar: período cerrado"); setDelConfirm(null); return; }
+    await db.deleteSale(id);
+    await refresh();
+    setDelConfirm(null);
+    notify("Venta eliminada · Stock revertido");
+  };
+
+  const totalPend = sorted.filter(d => d.status === "pendiente").reduce((s, d) => s + (d.totalValue || 0), 0);
+  const totalCred = sorted.filter(d => d.status === "credito").reduce((s, d) => s + (d.totalValue || 0), 0);
+  const totalRep = sorted.filter(d => d.status === "repuesto").reduce((s, d) => s + (d.totalValue || 0), 0);
+
+  return (
+    <div>
+      <div className="kpi-g">
+        <div className="kpi kpi-o"><div className="kpi-l">Total Devoluciones</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{devoluciones.length}</div><div className="kpi-s">{money(totalPend + totalCred + totalRep)}</div></div>
+        <div className="kpi kpi-y"><div className="kpi-l">Pendientes</div><div className="kpi-val">{money(totalPend)}</div><div className="kpi-s">{sorted.filter(d => d.status === "pendiente").length} · Monto suspendido</div></div>
+        <div className="kpi kpi-v"><div className="kpi-l">Con Crédito</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(totalCred)}</div><div className="kpi-s">Reduce costo compras</div></div>
+        <div className="kpi kpi-r"><div className="kpi-l">Repuestos</div><div className="kpi-val">{money(totalRep)}</div><div className="kpi-s">{sorted.filter(d => d.status === "repuesto").length} reposiciones</div></div>
+      </div>
+
+      {!showForm && (
+        <div style={{ marginBottom: 18 }}>
+          <label className="fl">Seleccioná una factura de compra para devolver</label>
+          <div style={{ display: "flex", gap: 10, marginTop: 6, marginBottom: 8, flexWrap: "wrap" }}>
+            <input className="fi" placeholder="Buscar por proveedor o nº factura..." value={facSearch} onChange={e => setFacSearch(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
+            <select className="fs" style={{ width: "auto" }} value={provFilter} onChange={e => setProvFilter(e.target.value)}>
+              <option value="">Todos los proveedores</option>
+              {[...new Set(purchases.map(p => p.supplier))].sort().map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "grid", gap: 8, maxHeight: 300, overflowY: "auto" }}>
+            {purchases.length === 0 ? <div className="empty"><p>No hay compras registradas</p></div> :
+              [...purchases]
+                .filter(p => (!provFilter || p.supplier === provFilter) && (!facSearch || (p.supplier || "").toLowerCase().includes(facSearch.toLowerCase()) || (p.invoiceNum || "").toLowerCase().includes(facSearch.toLowerCase())))
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .map(p => (
+                <div key={p.id} onClick={() => initDev(p)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--br)", cursor: "pointer", transition: "all .15s", fontSize: 13 }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ac)"} onMouseLeave={e => e.currentTarget.style.borderColor = "var(--br)"}>
+                  <div><span style={{ fontWeight: 600 }}>{p.supplier}</span> <span style={{ color: "var(--tx3)", fontSize: 11 }}>· {p.invoiceNum || "S/N"} · {fDate(p.date)}</span></div>
+                  <span style={{ fontWeight: 600 }}>{money(p.total)}</span>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {showForm && selPurch && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="card-h"><h3>Devolver de: {selPurch.supplier} · {selPurch.invoiceNum || "S/N"}</h3><button className="btn-i" onClick={() => setShowForm(false)}>{I.x}</button></div>
+          <div className="card-b">
+            <div className="merma-grid">
+              <div className="merma-row merma-row-h" style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px" }}><span></span><span>Artículo</span><span>Stock</span><span>Comprado</span><span>Devolver</span><span>Valor</span></div>
+              {devItems.map((it, idx) => {
+                const currentArt = articles.find(a => a.id === it.articleId);
+                const currentStock = currentArt?.stock ?? 0;
+                return (
+                <div className="merma-row" key={idx} style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px", opacity: it.selected ? 1 : 0.5 }}>
+                  <input type="checkbox" checked={it.selected} onChange={() => toggleItem(idx)} style={{ accentColor: "var(--ac)" }} />
+                  <span style={{ fontWeight: 500 }}>{it.articleName}</span>
+                  <span style={{ fontSize: 11, color: currentStock <= 0 ? "var(--rd)" : "var(--gn)", fontWeight: 600 }}>{currentStock.toFixed(2)}</span>
+                  <span style={{ fontSize: 12 }}>{it.quantity} {it.unit}</span>
+                  <input className="fi" type="number" step="0.01" min="0.01" max={Math.min(it.quantity, currentStock)} value={it.devQty || ""} onChange={e => updDevQty(idx, Math.min(it.quantity, currentStock, parseFloat(e.target.value) || 0))} disabled={!it.selected} style={{ padding: "4px 7px", fontSize: 12 }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--rd)" }}>{it.selected && it.devQty > 0 ? money(it.devQty * (it.unitCost || 0)) : "—"}</span>
+                </div>);
+              })}
+            </div>
+            <div className="fg" style={{ marginTop: 10 }}><label className="fl">Observaciones</label><input className="fi" value={devObs} onChange={e => setDevObs(e.target.value)} placeholder="Motivo de devolución (opcional)" /></div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
+              <button className="btn btn-s" onClick={() => setShowForm(false)}>Cancelar</button>
+              <button className="btn btn-p" onClick={saveDev}>Registrar Devolución</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* LIST */}
+      <div className="card"><div style={{ padding: 0 }}><div className="tw">
+        <table>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Valor</th><th>Estado</th><th style={{ width: 80 }}></th></tr></thead>
+          <tbody>
+            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay devoluciones registradas</p></div></td></tr> :
+              sorted.map(d => {
+                const linkedPurch = purchases.find(p => p.devolucionId === d.id);
+                return (
+                <tr key={d.id}>
+                  <td style={{ fontSize: 12 }}>{fDateTime(d.date)}</td>
+                  <td style={{ fontWeight: 500 }}>{d.supplier}</td>
+                  <td>{d.invoiceNum || "—"}</td>
+                  <td style={{ fontSize: 11 }}>
+                    {(d.items || []).map(it => `${it.articleName} (${it.devQty})`).join(", ")}
+                    {linkedPurch && (
+                      <div style={{ fontSize: 10, color: "#7C3AED", marginTop: 2 }}>🔗 Repuesta con compra del {fDate(linkedPurch.date)}</div>
+                    )}
+                  </td>
+                  <td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(d.totalValue)}</td>
+                  <td>
+                    {statusEdit === d.id ? (
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {STATUSES.map(st => (
+                          <button key={st.value} className={`btn btn-sm ${d.status === st.value ? "btn-p" : "btn-s"}`} onClick={() => { onStatusChange(d.id, st.value); setStatusEdit(null); }} style={{ padding: "3px 8px", fontSize: 10 }}>{st.label}</button>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className={`badge ${STATUSES.find(st => st.value === d.status)?.css || "b-yw"}`} onClick={() => !linkedPurch ? setStatusEdit(d.id) : null} style={{ cursor: linkedPurch ? "default" : "pointer" }}>
+                        {STATUSES.find(st => st.value === d.status)?.label || d.status}
+                      </span>
+                    )}
+                  </td>
+                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    {isPrevMonth(d.date) ? <span className="lock-badge">{I.lock}</span> :
+                      delConfirm === d.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(d.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                      ) : (<button className="btn-i" onClick={() => setDelConfirm(d.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>)}
+                  </div></td>
+                </tr>);
+              })}
+          </tbody>
+        </table>
+      </div></div></div>
+
+      <div style={{ marginTop: 16, padding: 16, background: "var(--bg3)", borderRadius: 10, fontSize: 12, color: "var(--tx3)" }}>
+        <strong style={{ color: "var(--tx2)" }}>Impacto financiero:</strong> Las devoluciones "Pendientes" quedan como monto suspendido. Las "Con Crédito" reducen el costo de compras del período. Las "Repuestas" se cargan como compra nueva vinculada en el módulo de Compras.
+      </div>
+    </div>
+  );
+}
+
+function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) {
+  const [client, setClient] = useState(editData?.client || "");
+  const [pm1, setPm1] = useState(editData?.payMethod || payMethods[0]?.id || "");
+  const [pm1Amount, setPm1Amount] = useState("");
+  const [isMixed, setIsMixed] = useState(editData?.payMethod2 ? true : false);
+  const [pm2, setPm2] = useState(editData?.payMethod2 || "");
+  const [cashReceived, setCashReceived] = useState("");
+  const [discountMode, setDiscountMode] = useState(editData?.discountMode || "none"); // none, item, percent
+  const [discountPct, setDiscountPct] = useState(editData?.discountPct || 0);
+  const [items, setItems] = useState(() => {
+    if (!editData) return [];
+    return editData.items.map(it => ({ ...it, origPrice: it.unitPrice }));
+  });
+  const [q, setQ] = useState(""); const [showDD, setShowDD] = useState(false);
+  const [showComp, setShowComp] = useState(false);
+  const [compName, setCompName] = useState(""); const [compPrice, setCompPrice] = useState("");
+  const [compIngr, setCompIngr] = useState([]); const [compQ, setCompQ] = useState(""); const [compDD, setCompDD] = useState(false);
+
+  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id && !i.isComposite)) : [];
+  const compAvail = compQ ? articles.filter(a => a.name && a.name.toLowerCase().includes(compQ.toLowerCase())).slice(0, 8) : [];
+
+  const addExisting = (id, name, units, salePrice, purchasePrice, stock) => {
+    setItems(prev => [...prev, { articleId: id, articleName: name, unit: (units || ["kg"])[0], quantity: 1, unitPrice: salePrice, origPrice: salePrice, costPrice: purchasePrice, subtotal: salePrice, profit: salePrice - purchasePrice, stock }]);
+    setQ(""); setShowDD(false);
+  };
+  const updItem = (idx, key, val) => {
+    setItems(prev => prev.map((it, i) => {
+      if (i !== idx) return it;
+      const upd = { ...it, [key]: val };
+      if (key === "quantity" || key === "unitPrice") { upd.subtotal = (upd.quantity || 0) * (upd.unitPrice || 0); upd.profit = (upd.quantity || 0) * ((upd.unitPrice || 0) - (upd.costPrice || 0)); }
+      return upd;
+    }));
+  };
+  const addIngr = (a) => { if (compIngr.find(i => i.articleId === a.id)) return; setCompIngr(prev => [...prev, { articleId: a.id, name: a.name, unit: (a.units || ["kg"])[0], qty: 0.1, costPrice: a.purchasePrice || 0 }]); setCompQ(""); setCompDD(false); };
+  const updIngr = (idx, key, val) => setCompIngr(prev => prev.map((it, i) => i !== idx ? it : { ...it, [key]: val }));
+  const compCost = compIngr.reduce((s, i) => s + (i.qty || 0) * (i.costPrice || 0), 0);
+  const addComposite = () => {
+    if (!compName.trim() || !compPrice || compIngr.length === 0) return;
+    const price = parseFloat(compPrice);
+    setItems(prev => [...prev, { articleId: "comp_" + uid(), articleName: compName.trim(), unit: "und", quantity: 1, unitPrice: price, origPrice: price, costPrice: compCost, subtotal: price, profit: price - compCost, isComposite: true, ingredients: compIngr.map(i => ({ ...i })) }]);
+    setShowComp(false); setCompName(""); setCompPrice(""); setCompIngr([]);
+  };
+
+  const subtotal = items.reduce((s, i) => s + (i.subtotal || 0), 0);
+  const itemDiscount = discountMode === "item" ? items.reduce((s, it) => s + (it.quantity || 0) * ((it.origPrice || 0) - (it.unitPrice || 0)), 0) : 0;
+  const pctDiscount = discountMode === "percent" ? Math.round(subtotal * (discountPct || 0) / 100 * 100) / 100 : 0;
+  const totalDiscount = discountMode === "item" ? itemDiscount : pctDiscount;
+  const total = Math.max(0, subtotal - pctDiscount);
+  const profit = items.reduce((s, i) => s + (i.profit || 0), 0) - pctDiscount;
+
+  const pmLabel = (id) => payMethods.find(p => p.id === id)?.name || id || "";
+  const isEfectivo = (id) => (pmLabel(id) || "").toLowerCase().includes("efectivo");
+
+  // Payment logic: efectivo = manual entry + vuelto, other = auto-fill with pending amount
+  const pm1Pending = total;
+  const pm1Auto = !isEfectivo(pm1) && !isMixed;
+  const pm1Val = parseFloat(pm1Amount) || 0;
+  const pm2Name_ = pmLabel(pm2);
+  const isEf2 = isEfectivo(pm2);
+  const pm2Pending = Math.max(0, total - pm1Val);
+  const pm2Val = parseFloat(cashReceived) || 0; // cashReceived doubles as pm2 manual entry for cash
+  const vuelto = isMixed
+    ? (isEf2 && pm2Val > pm2Pending ? pm2Val - pm2Pending : 0)
+    : (isEfectivo(pm1) && pm1Val > total ? pm1Val - total : 0);
+
+  const handleSave = () => {
+    const resolvedItems = items.map(({ origPrice, stock, ...rest }) => ({ ...rest, articleName: rest.articleName || articles.find(a => a.id === rest.articleId)?.name || "" }));
+    const saleData = { client, payMethod: pm1, items: resolvedItems, total, profit, discountMode, discountAmount: totalDiscount, _editId: editData?.id || null };
+    if (discountMode === "percent") saleData.discountPct = discountPct;
+    if (isMixed && pm2) { saleData.payMethod2 = pm2; saleData.pm1Amount = pm1Val; saleData.pm2Amount = pm2Pending; }
+    if (!isMixed && isEfectivo(pm1) && pm1Val) saleData.cashReceived = pm1Val;
+    if (isMixed && isEf2 && pm2Val) saleData.cashReceived = pm2Val;
+    onSave(saleData);
+  };
+
+  return (
+    <div className="mo" onClick={onClose}>
+      <div className="md md-lg" onClick={e => e.stopPropagation()}>
+        <div className="md-h"><h2>{editData ? "Editar" : "Nuevo"} Ticket de Venta</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
+        <div className="md-b">
+          <div className="fg"><label className="fl">Cliente (opcional)</label><input className="fi" value={client} onChange={e => setClient(e.target.value)} placeholder="Nombre del cliente" /></div>
+
+          {/* ARTICLES */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexWrap: "wrap" }}>
+            <div className="fg" style={{ position: "relative", flex: 1, marginBottom: 0, minWidth: 180 }}>
+              <label className="fl">Agregar Artículo</label>
+              <input className="fi" placeholder="Buscar..." value={q} onChange={e => { setQ(e.target.value); setShowDD(true); }} onFocus={() => q && setShowDD(true)} onBlur={() => setTimeout(() => setShowDD(false), 250)} />
+              {showDD && avail.length > 0 && (<div className="dd">{avail.slice(0, 8).map(a => (
+                <div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addExisting(a.id, a.name, a.units, a.salePrice, a.purchasePrice, a.stock); }}>
+                  <span>{a.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({a.stock} {(a.units || [])[0]})</span></span>
+                  <span style={{ fontWeight: 600, color: "var(--ac)", fontSize: 12 }}>{money(a.salePrice)}</span>
+                </div>))}</div>)}
+            </div>
+            <button className="btn btn-s" style={{ whiteSpace: "nowrap", marginTop: 16 }} onClick={() => setShowComp(!showComp)}>{I.sandwich} Compuesto</button>
+          </div>
+
+          {/* COMBO SELECTOR */}
+          {(combos || []).filter(c => c.active !== false).length > 0 && (
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--tx3)", textTransform: "uppercase", alignSelf: "center" }}>Combos:</span>
+              {(combos || []).filter(c => c.active !== false).map(c => {
+                const comboSubtotal = c.items.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.salePrice || 0); }, 0);
+                const comboCost = c.items.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.purchasePrice || 0); }, 0);
+                return (
+                  <button key={c.id} className="pm-chip" onClick={() => {
+                    const price = c.suggestedPrice || comboSubtotal;
+                    const ingr = c.items.map(ci => { const a = articles.find(x => x.id === ci.articleId); return { articleId: ci.articleId, name: a?.name || ci.name, unit: ci.unit || (a?.units || ["kg"])[0], qty: ci.qty, costPrice: a?.purchasePrice || 0 }; });
+                    setItems(prev => [...prev, { articleId: "combo_" + uid(), articleName: c.name, unit: "und", quantity: 1, unitPrice: price, origPrice: comboSubtotal, costPrice: comboCost, subtotal: price, profit: price - comboCost, isComposite: true, isCombo: true, ingredients: ingr }]);
+                  }} style={{ fontSize: 12 }}>
+                    {c.name} · <span style={{ fontWeight: 600, color: "var(--ac)" }}>{money(c.suggestedPrice || comboSubtotal)}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* COMPOSITE */}
+          {showComp && (
+            <div className="comp-ingr" style={{ marginBottom: 14 }}>
+              <div style={{ fontWeight: 700, fontSize: 12, color: "var(--ac)", marginBottom: 8, textTransform: "uppercase" }}>Producto Compuesto</div>
+              <div className="fr">
+                <div className="fg"><label className="fl">Nombre</label><input className="fi" value={compName} onChange={e => setCompName(e.target.value)} placeholder="Ej: Sandwich Jamón y Queso" /></div>
+                <div className="fg"><label className="fl">Precio Venta</label><input className="fi" type="number" step="0.01" min="0" value={compPrice} onChange={e => setCompPrice(e.target.value)} /></div>
+              </div>
+              <div className="fg" style={{ position: "relative" }}>
+                <label className="fl">Agregar Ingrediente</label>
+                <input className="fi" placeholder="Buscar..." value={compQ} onChange={e => { setCompQ(e.target.value); setCompDD(true); }} onFocus={() => compQ && setCompDD(true)} onBlur={() => setTimeout(() => setCompDD(false), 250)} />
+                {compDD && compAvail.length > 0 && (<div className="dd">{compAvail.map(a => (<div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addIngr(a); }}><span>{a.name}</span><span style={{ fontSize: 11, color: "var(--tx3)" }}>{money(a.purchasePrice)}/u</span></div>))}</div>)}
+              </div>
+              {compIngr.length > 0 && (<div style={{ margin: "8px 0" }}>
+                {compIngr.map((ing, idx) => (<div className="comp-ingr-r" key={ing.articleId}><span style={{ flex: 2, fontWeight: 500 }}>{ing.name}</span><input className="fi" type="number" step="0.01" min="0.01" value={ing.qty} onChange={e => updIngr(idx, "qty", parseFloat(e.target.value) || 0)} style={{ width: 70, padding: "4px 7px", fontSize: 12 }} /><span style={{ fontSize: 11, color: "var(--tx3)" }}>{ing.unit} × {money(ing.costPrice)}</span><span style={{ fontSize: 12, fontWeight: 600, minWidth: 70, textAlign: "right" }}>{money(ing.qty * ing.costPrice)}</span><button className="btn-i" onClick={() => setCompIngr(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", padding: 2 }}>{I.trash}</button></div>))}
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 4px", borderTop: "1px solid var(--br)", marginTop: 6, fontSize: 12 }}><span style={{ fontWeight: 600 }}>Costo: {money(compCost)}</span>{compPrice && <span style={{ fontWeight: 600, color: "var(--gn)" }}>Ganancia: {money(parseFloat(compPrice) - compCost)}</span>}</div>
+              </div>)}
+              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                <button className="btn btn-p btn-sm" disabled={!compName.trim() || !compPrice || compIngr.length === 0} onClick={addComposite}>{I.check} Agregar al Ticket</button>
+                <button className="btn btn-s btn-sm" onClick={() => setShowComp(false)}>Cancelar</button>
+              </div>
+            </div>
+          )}
+
+          {/* ITEMS GRID */}
+          {items.length > 0 && (<>
+            {/* Discount selector */}
+            <div style={{ display: "flex", gap: 12, alignItems: "center", margin: "10px 0 6px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--tx3)", textTransform: "uppercase" }}>Descuento:</span>
+              {[["none","Sin descuento"],["item","Por ítem"],["percent","% sobre total"]].map(([v,l]) => (
+                <label key={v} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 12, fontWeight: discountMode === v ? 600 : 400, color: discountMode === v ? "var(--ac)" : "var(--tx3)" }}>
+                  <input type="radio" name="disc" checked={discountMode === v} onChange={() => setDiscountMode(v)} style={{ accentColor: "var(--ac)" }} />{l}
+                </label>
+              ))}
+              {discountMode === "percent" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <input className="fi" type="number" step="1" min="0" max="100" value={discountPct || ""} onChange={e => setDiscountPct(parseFloat(e.target.value) || 0)} style={{ width: 60, padding: "4px 8px", fontSize: 13, fontWeight: 600, textAlign: "center" }} />
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>%</span>
+                </div>
+              )}
+            </div>
+
+            <div className="ti">
+              <div className="ti-r ti-h" style={{ gridTemplateColumns: discountMode === "item" ? "2fr 60px 80px 80px 80px 32px" : "2fr 70px 90px 100px 36px" }}>
+                <span>Artículo</span><span>Cant.</span><span>Unidad</span>{discountMode === "item" && <span>P.Unit.</span>}<span>Subtotal</span><span></span>
+              </div>
+              {items.map((it, idx) => {
+                const art = articles.find(a => a.id === it.articleId);
+                const rn = it.articleName || art?.name || "";
+                return (
+                  <div className="ti-r" key={it.articleId || idx} style={{ gridTemplateColumns: discountMode === "item" ? "2fr 60px 80px 80px 80px 32px" : "2fr 70px 90px 100px 36px" }}>
+                    <div>
+                      <div style={{ fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>{rn}{it.isComposite && <span className="comp-badge">Compuesto</span>}</div>
+                      <div style={{ fontSize: 11, color: "var(--ac)" }}>{money(it.unitPrice)}/{it.unit}
+                        {discountMode === "item" && it.unitPrice !== it.origPrice && <span style={{ textDecoration: "line-through", color: "var(--tx3)", marginLeft: 4 }}>{money(it.origPrice)}</span>}
+                      </div>
+                      {it.isComposite && it.ingredients && <div style={{ fontSize: 10, color: "var(--tx3)" }}>{it.ingredients.map(i => `${i.name}(${i.qty}${i.unit})`).join(" + ")}</div>}
+                      {!it.isComposite && it.quantity > (it.stock || 9999) && <div style={{ fontSize: 10, color: "var(--rd)" }}>⚠ Stock: {it.stock}</div>}
+                    </div>
+                    <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
+                    <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>
+                      {it.isComposite ? <option value="und">Unidad</option> : (art?.units || ["kg"]).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
+                    </select>
+                    {discountMode === "item" && <input className="fi" type="number" step="0.01" min="0" value={it.unitPrice} onChange={e => updItem(idx, "unitPrice", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12, background: it.unitPrice !== it.origPrice ? "var(--ywL)" : "var(--bg2)" }} />}
+                    <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
+                    <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* TOTALS */}
+            <div style={{ marginTop: 10, padding: "12px 16px", background: "var(--bg3)", borderRadius: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}><span>Subtotal</span><span style={{ fontWeight: 600 }}>{money(subtotal)}</span></div>
+              {totalDiscount > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "var(--rd)", marginTop: 4 }}>
+                  <span>Descuento {discountMode === "percent" ? `(${discountPct}%)` : "(por ítem)"}</span>
+                  <span style={{ fontWeight: 600 }}>- {money(totalDiscount)}</span>
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 700, marginTop: 6, paddingTop: 6, borderTop: "2px solid var(--br)", fontFamily: "'Fraunces',serif" }}>
+                <span>Total</span><span style={{ color: "var(--ac)" }}>{money(total)}</span>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {money(profit)}</div>
+            </div>
+
+            {/* PAYMENT */}
+            <div style={{ marginTop: 14 }}>
+              <label className="fl">Cobro</label>
+              <div className="pm-grid" style={{ marginBottom: 8 }}>
+                {payMethods.map(pm => (
+                  <button key={pm.id} type="button" className={`pm-chip ${pm1 === pm.id ? "on" : ""}`} onClick={() => { setPm1(pm.id); setPm1Amount(""); }}>{pm1 === pm.id && I.check} {pm.name}</button>
+                ))}
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, color: isMixed ? "var(--ac)" : "var(--tx3)", marginBottom: 8 }}>
+                <input type="checkbox" checked={isMixed} onChange={e => { setIsMixed(e.target.checked); setPm1Amount(""); setPm2(""); setCashReceived(""); }} style={{ accentColor: "var(--ac)" }} /> Pago Mixto (2 métodos)
+              </label>
+
+              {isMixed ? (
+                <div style={{ background: "var(--bg3)", borderRadius: 10, padding: 12 }}>
+                  <div className="fr">
+                    <div className="fg">
+                      <label className="fl">{pmLabel(pm1)} — Monto</label>
+                      <input className="fi" type="number" step="0.01" min="0" value={pm1Amount} onChange={e => setPm1Amount(e.target.value)} placeholder="0.00" />
+                    </div>
+                    <div className="fg">
+                      <label className="fl">Segundo método</label>
+                      <div className="pm-grid">{payMethods.filter(p => p.id !== pm1).map(pm => (
+                        <button key={pm.id} type="button" className={`pm-chip ${pm2 === pm.id ? "on" : ""}`} onClick={() => setPm2(pm.id)} style={{ padding: "5px 10px", fontSize: 11 }}>{pm2 === pm.id && I.check} {pm.name}</button>
+                      ))}</div>
+                    </div>
+                  </div>
+                  {pm1Val > 0 && pm2 && (
+                    <div style={{ marginTop: 8, padding: "8px 10px", background: "var(--bg2)", borderRadius: 8 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{pmLabel(pm2)}: <span style={{ color: "var(--ac)" }}>{money(pm2Pending)}</span></div>
+                      {isEf2 && (
+                        <div className="fr" style={{ marginTop: 6 }}>
+                          <div className="fg" style={{ marginBottom: 0 }}><label className="fl" style={{ fontSize: 10 }}>Recibido en efectivo</label>
+                            <input className="fi" type="number" step="0.01" min="0" value={cashReceived} onChange={e => setCashReceived(e.target.value)} placeholder={money(pm2Pending)} style={{ fontSize: 12 }} /></div>
+                          {pm2Val > 0 && <div className="fg" style={{ marginBottom: 0 }}><label className="fl" style={{ fontSize: 10 }}>Vuelto</label>
+                            <input className="fi" readOnly value={money(Math.max(0, pm2Val - pm2Pending))} style={{ fontWeight: 600, color: pm2Val > pm2Pending ? "var(--ac)" : "var(--tx3)", background: "var(--bg3)", fontSize: 12 }} /></div>}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : isEfectivo(pm1) ? (
+                <div className="fr">
+                  <div className="fg"><label className="fl">Monto recibido</label><input className="fi" type="number" step="0.01" min="0" value={pm1Amount} onChange={e => setPm1Amount(e.target.value)} placeholder={money(total)} /></div>
+                  <div className="fg"><label className="fl">Vuelto</label><input className="fi" readOnly value={pm1Val ? money(vuelto) : "—"} style={{ fontWeight: 600, color: vuelto > 0 ? "var(--ac)" : "var(--tx3)", background: "var(--bg3)" }} /></div>
+                </div>
+              ) : null}
+            </div>
+          </>)}
+        </div>
+        <div className="md-f">
+          <button className="btn btn-s" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-p" disabled={items.length === 0 || !pm1 || (isMixed && (!pm2 || !pm1Amount))} onClick={handleSave}>
+            {editData ? "Guardar Cambios" : "Registrar Venta"}
+          </button>
+          {items.length > 0 && !pm1 && <span style={{ fontSize: 10, color: "var(--rd)", marginTop: 4 }}>⚠ Seleccioná un método de pago</span>}
+          {items.length > 0 && isMixed && (!pm2 || !pm1Amount) && <span style={{ fontSize: 10, color: "var(--rd)", marginTop: 4 }}>⚠ Completá el pago mixto</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ DEVOLUCIONES ============
+function DevolucionesPage({ articles, purchases, devoluciones, onSave, onDelete, onStatusChange, notify }) {
+  const [showForm, setShowForm] = useState(false);
+  const [selPurch, setSelPurch] = useState(null);
+  const [devItems, setDevItems] = useState([]);
+  const [devObs, setDevObs] = useState("");
+  const [delConfirm, setDelConfirm] = useState(null);
+  const [provFilter, setProvFilter] = useState("");
+  const [facSearch, setFacSearch] = useState("");
+  const sorted = useMemo(() => [...devoluciones].sort((a, b) => new Date(b.date) - new Date(a.date)), [devoluciones]);
+  const [statusEdit, setStatusEdit] = useState(null);
+
+  const STATUSES = [{ value: "pendiente", label: "Pendiente", css: "b-yw" }, { value: "credito", label: "Con Crédito", css: "b-ac" }, { value: "repuesto", label: "Repuesto", css: "b-gn" }];
+
+  const initDev = (p) => {
+    setSelPurch(p);
+    setDevItems(p.items.map(it => ({ ...it, devQty: 0, selected: false })));
+    setDevObs("");
+    setShowForm(true);
+  };
+
+  const toggleItem = (idx) => setDevItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, selected: !it.selected, devQty: !it.selected ? it.quantity : 0 }));
+  const updDevQty = (idx, val) => setDevItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, devQty: val }));
+
+  const saveDev = () => {
+    const active = devItems.filter(it => it.selected && it.devQty > 0);
+    if (active.length === 0) { notify("⚠ Seleccioná al menos un artículo"); return; }
+    const totalVal = active.reduce((s, it) => s + it.devQty * (it.unitCost || 0), 0);
+    const dev = {
+      purchaseId: selPurch.id, supplier: selPurch.supplier, invoiceNum: selPurch.invoiceNum,
+      items: active.map(it => ({ articleId: it.articleId, articleName: it.articleName, devQty: it.devQty, unitCost: it.unitCost, unit: it.unit })),
+      totalValue: totalVal, obs: devObs
+    };
+    onSave(dev);
+    setShowForm(false); setSelPurch(null);
+  };
+
+  const handleDel = (id) => {
+    const ok = onDelete(id);
+    if (ok !== false) setDelConfirm(null);
+  };
+
+  const totalPend = sorted.filter(d => d.status === "pendiente").reduce((s, d) => s + (d.totalValue || 0), 0);
+  const totalCred = sorted.filter(d => d.status === "credito").reduce((s, d) => s + (d.totalValue || 0), 0);
+  const totalRep = sorted.filter(d => d.status === "repuesto").reduce((s, d) => s + (d.totalValue || 0), 0);
+
+  return (
+    <div>
+      <div className="kpi-g">
+        <div className="kpi kpi-o"><div className="kpi-l">Total Devoluciones</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{devoluciones.length}</div><div className="kpi-s">{money(totalPend + totalCred + totalRep)}</div></div>
+        <div className="kpi kpi-y"><div className="kpi-l">Pendientes</div><div className="kpi-val">{money(totalPend)}</div><div className="kpi-s">{sorted.filter(d => d.status === "pendiente").length} · Monto suspendido</div></div>
+        <div className="kpi kpi-v"><div className="kpi-l">Con Crédito</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(totalCred)}</div><div className="kpi-s">Reduce costo compras</div></div>
+        <div className="kpi kpi-r"><div className="kpi-l">Repuestos</div><div className="kpi-val">{money(totalRep)}</div><div className="kpi-s">{sorted.filter(d => d.status === "repuesto").length} reposiciones</div></div>
+      </div>
+
+      {!showForm && (
+        <div style={{ marginBottom: 18 }}>
+          <label className="fl">Seleccioná una factura de compra para devolver</label>
+          <div style={{ display: "flex", gap: 10, marginTop: 6, marginBottom: 8, flexWrap: "wrap" }}>
+            <input className="fi" placeholder="Buscar por proveedor o nº factura..." value={facSearch} onChange={e => setFacSearch(e.target.value)} style={{ flex: 1, minWidth: 180 }} />
+            <select className="fs" style={{ width: "auto" }} value={provFilter} onChange={e => setProvFilter(e.target.value)}>
+              <option value="">Todos los proveedores</option>
+              {[...new Set(purchases.map(p => p.supplier))].sort().map(s => <option key={s}>{s}</option>)}
+            </select>
+          </div>
+          <div style={{ display: "grid", gap: 8, maxHeight: 300, overflowY: "auto" }}>
+            {purchases.length === 0 ? <div className="empty"><p>No hay compras registradas</p></div> :
+              [...purchases]
+                .filter(p => (!provFilter || p.supplier === provFilter) && (!facSearch || (p.supplier || "").toLowerCase().includes(facSearch.toLowerCase()) || (p.invoiceNum || "").toLowerCase().includes(facSearch.toLowerCase())))
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .map(p => (
+                <div key={p.id} onClick={() => initDev(p)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--br)", cursor: "pointer", transition: "all .15s", fontSize: 13 }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = "var(--ac)"} onMouseLeave={e => e.currentTarget.style.borderColor = "var(--br)"}>
+                  <div><span style={{ fontWeight: 600 }}>{p.supplier}</span> <span style={{ color: "var(--tx3)", fontSize: 11 }}>· {p.invoiceNum || "S/N"} · {fDate(p.date)}</span></div>
+                  <span style={{ fontWeight: 600 }}>{money(p.total)}</span>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
+
+      {showForm && selPurch && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="card-h"><h3>Devolver de: {selPurch.supplier} · {selPurch.invoiceNum || "S/N"}</h3><button className="btn-i" onClick={() => setShowForm(false)}>{I.x}</button></div>
+          <div className="card-b">
+            <div className="merma-grid">
+              <div className="merma-row merma-row-h" style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px" }}><span></span><span>Artículo</span><span>Stock</span><span>Comprado</span><span>Devolver</span><span>Valor</span></div>
+              {devItems.map((it, idx) => {
+                const currentArt = articles.find(a => a.id === it.articleId);
+                const currentStock = currentArt?.stock ?? 0;
+                return (
+                <div className="merma-row" key={idx} style={{ gridTemplateColumns: "30px 2fr 70px 70px 80px 80px", opacity: it.selected ? 1 : 0.5 }}>
+                  <input type="checkbox" checked={it.selected} onChange={() => toggleItem(idx)} style={{ accentColor: "var(--ac)" }} />
+                  <span style={{ fontWeight: 500 }}>{it.articleName}</span>
+                  <span style={{ fontSize: 11, color: currentStock <= 0 ? "var(--rd)" : "var(--gn)", fontWeight: 600 }}>{currentStock.toFixed(2)}</span>
+                  <span style={{ fontSize: 12 }}>{it.quantity} {it.unit}</span>
+                  <input className="fi" type="number" step="0.01" min="0.01" max={Math.min(it.quantity, currentStock)} value={it.devQty || ""} onChange={e => updDevQty(idx, Math.min(it.quantity, currentStock, parseFloat(e.target.value) || 0))} disabled={!it.selected} style={{ padding: "4px 7px", fontSize: 12 }} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--rd)" }}>{it.selected && it.devQty > 0 ? money(it.devQty * (it.unitCost || 0)) : "—"}</span>
+                </div>);
+              })}
+            </div>
+            <div className="fg" style={{ marginTop: 10 }}><label className="fl">Observaciones</label><input className="fi" value={devObs} onChange={e => setDevObs(e.target.value)} placeholder="Motivo de devolución (opcional)" /></div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10, justifyContent: "flex-end" }}>
+              <button className="btn btn-s" onClick={() => setShowForm(false)}>Cancelar</button>
+              <button className="btn btn-p" onClick={saveDev}>Registrar Devolución</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* LIST */}
+      <div className="card"><div style={{ padding: 0 }}><div className="tw">
+        <table>
+          <thead><tr><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Valor</th><th>Estado</th><th style={{ width: 80 }}></th></tr></thead>
+          <tbody>
+            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay devoluciones registradas</p></div></td></tr> :
+              sorted.map(d => {
+                const linkedPurch = purchases.find(p => p.devolucionId === d.id);
+                return (
+                <tr key={d.id}>
+                  <td style={{ fontSize: 12 }}>{fDateTime(d.date)}</td>
+                  <td style={{ fontWeight: 500 }}>{d.supplier}</td>
+                  <td>{d.invoiceNum || "—"}</td>
+                  <td style={{ fontSize: 11 }}>
+                    {(d.items || []).map(it => `${it.articleName} (${it.devQty})`).join(", ")}
+                    {linkedPurch && (
+                      <div style={{ fontSize: 10, color: "#7C3AED", marginTop: 2 }}>🔗 Repuesta con compra del {fDate(linkedPurch.date)}</div>
+                    )}
+                  </td>
+                  <td style={{ fontWeight: 600, color: "var(--rd)" }}>{money(d.totalValue)}</td>
+                  <td>
+                    {statusEdit === d.id ? (
+                      <div style={{ display: "flex", gap: 4 }}>
+                        {STATUSES.map(st => (
+                          <button key={st.value} className={`btn btn-sm ${d.status === st.value ? "btn-p" : "btn-s"}`} onClick={() => { onStatusChange(d.id, st.value); setStatusEdit(null); }} style={{ padding: "3px 8px", fontSize: 10 }}>{st.label}</button>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className={`badge ${STATUSES.find(st => st.value === d.status)?.css || "b-yw"}`} onClick={() => !linkedPurch ? setStatusEdit(d.id) : null} style={{ cursor: linkedPurch ? "default" : "pointer" }}>
+                        {STATUSES.find(st => st.value === d.status)?.label || d.status}
+                      </span>
+                    )}
+                  </td>
+                  <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    {isPrevMonth(d.date) ? <span className="lock-badge">{I.lock}</span> :
+                      delConfirm === d.id ? (
+                        <><button className="btn-i" onClick={() => handleDel(d.id)} style={{ color: "#fff", background: "var(--rd)", border: "1px solid var(--rd)" }}>{I.check}</button>
+                        <button className="btn-i" onClick={() => setDelConfirm(null)}>{I.x}</button></>
+                      ) : (<button className="btn-i" onClick={() => setDelConfirm(d.id)} style={{ color: "var(--rd)" }}>{I.trash}</button>)}
+                  </div></td>
+                </tr>);
+              })}
+          </tbody>
+        </table>
+      </div></div></div>
+
+      <div style={{ marginTop: 16, padding: 16, background: "var(--bg3)", borderRadius: 10, fontSize: 12, color: "var(--tx3)" }}>
+        <strong style={{ color: "var(--tx2)" }}>Impacto financiero:</strong> Las devoluciones "Pendientes" quedan como monto suspendido. Las "Con Crédito" reducen el costo de compras del período. Las "Repuestas" se cargan como compra nueva vinculada en el módulo de Compras.
+      </div>
+    </div>
+  );
+}
+
+// ============ MERMA ============
 
 // ============ MERMA ============
 function MermaPage({ articles, mermas, refresh, notify }) {
