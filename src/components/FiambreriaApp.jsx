@@ -755,10 +755,7 @@ function PurchaseModal({ articles, purchases, priceHistory, editData, pendingDev
       try {
         const base64 = dataUrl.split(",")[1];
         const resp = await fetch("/api/scan-invoice", { method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: [
-            { type: "image", source: { type: "base64", media_type: file.type, data: base64 } },
-            { type: "text", text: `Analiza esta imagen de una factura de compra de una fiambrería/almacén argentino. Extraé los datos en formato JSON puro sin backticks. Estructura: {"supplier":"","invoiceNum":"","items":[{"name":"","quantity":1.0,"unit":"kg","unitCost":0}]}. unit: kg/g/und/lt. Precios numéricos sin $. Respondé SOLO JSON.` }
-          ]}]})
+          body: JSON.stringify({ image: base64, mimeType: file.type })
         });
         if (!resp.ok) throw new Error("Error al procesar");
         const parsed = await resp.json();
