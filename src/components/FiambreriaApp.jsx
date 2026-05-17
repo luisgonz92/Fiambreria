@@ -40,7 +40,7 @@ const getPriceHistory = (articleId, purchases, phTable) => {
 // ============ SUPABASE DB LAYER ============
 const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: Number(r.iva)||21, isCorte: !!r.is_corte, category: r.category_name||r.category||'Otros' });
 const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
-const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit) })) });
+const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit), isComboItem: !!i.combo_id, comboGroupId: i.combo_id||null })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
 const mapMerma = (r) => ({ ...r, lossValue: Number(r.loss_value)||0, items: r.items||[] });
 const mapDevol = (r) => ({ ...r, purchaseId: r.purchase_id, invoiceNum: r.invoice_num, totalValue: Number(r.total_value)||0, items: r.items||[] });
@@ -68,8 +68,8 @@ const db = {
   async deletePurchase(id) { await supabase.from('purchase_invoices').delete().eq('id', id); },
   // Sales
   async getSales() { const { data } = await supabase.from('sale_tickets').select('*, sale_ticket_items(*)').order('date', { ascending: false }); return (data||[]).map(mapSale); },
-  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
-  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
+  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
+  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
   async deleteSale(id) { await supabase.from('sale_tickets').delete().eq('id', id); },
   // Expenses
   async getExpenses() { const { data } = await supabase.from('expenses').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapExp); },
@@ -95,6 +95,7 @@ const db = {
   async insertCombo(c) { await supabase.from('combos').insert({ name: c.name, items: c.items, suggested_price: c.suggestedPrice, active: c.active !== false }); },
   async updateCombo(id, c) { await supabase.from('combos').update({ name: c.name, items: c.items, suggested_price: c.suggestedPrice, active: c.active }).eq('id', id); },
   async deleteCombo(id) { await supabase.from('combos').delete().eq('id', id); },
+  async updateArticleStock(id, stock) { await supabase.from('articles').update({ stock }).eq('id', id); },
   // Price History
   async getPriceHistory() { const { data } = await supabase.from('price_history').select('*').order('date', { ascending: true }); return (data||[]).map(r => ({ id: r.id, articleId: r.article_id, articleName: r.article_name, date: r.date, price: Number(r.price)||0, prevPrice: Number(r.prev_price)||0, supplier: r.supplier, unit: r.unit })); },
   async insertPriceHistoryEntries(entries) { if (!entries?.length) return; await supabase.from('price_history').insert(entries.map(e => ({ article_id: e.articleId, article_name: e.articleName, date: e.date, price: e.price, prev_price: e.prevPrice||0, supplier: e.supplier, unit: e.unit }))).catch(() => {}); },
@@ -964,11 +965,15 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
   );
   const activePM = payMethods.filter(pm => pm.active);
 
-  // Helper: deduct stock for items (handles composite ingredients)
   const deductStock = (upd, saleItems, factor) => {
     saleItems.forEach(it => {
+      if (it.isComboPrice) return;
+      if (it.isComboItem) {
+        const idx = upd.findIndex(a => a.id === it.articleId);
+        if (idx > -1) upd[idx] = { ...upd[idx], stock: Math.max(0, (upd[idx].stock || 0) + factor * (it.quantity || 0)) };
+        return;
+      }
       if (it.isComposite && it.ingredients) {
-        // Composite: deduct each ingredient × sale quantity
         it.ingredients.forEach(ing => {
           const idx = upd.findIndex(a => a.id === ing.articleId);
           if (idx > -1) upd[idx] = { ...upd[idx], stock: Math.max(0, (upd[idx].stock || 0) + factor * (ing.qty || 0) * (it.quantity || 1)) };
@@ -983,8 +988,22 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
   const handleSave = async (data) => {
     const { _editId, ...saleData } = data;
     try {
-      if (_editId) { await db.updateSale(_editId, saleData, saleData.items); notify("Venta actualizada"); }
-      else { await db.insertSale(saleData, saleData.items); notify("Venta registrada: " + money(saleData.total)); }
+      const upd = [...articles];
+      if (_editId) {
+        const old = sales.find(x => x.id === _editId);
+        if (old) deductStock(upd, old.items, +1);
+        deductStock(upd, saleData.items, -1);
+        await db.updateSale(_editId, saleData, saleData.items);
+        notify("Venta actualizada");
+      } else {
+        deductStock(upd, saleData.items, -1);
+        await db.insertSale(saleData, saleData.items);
+        notify("Venta registrada: " + money(saleData.total));
+      }
+      for (const a of upd) {
+        const orig = articles.find(x => x.id === a.id);
+        if (orig && orig.stock !== a.stock) await db.updateArticleStock(a.id, a.stock);
+      }
       await refresh();
     } catch(e) { notify("Error: "+e.message); }
     setModal(false); setEditSale(null);
@@ -994,7 +1013,13 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
     const s = sales.find(x => x.id === id);
     if (!s) return;
     if (isPrevMonth(s.date)) { notify("⚠ No se puede eliminar: período cerrado"); setDelConfirm(null); return; }
+    const upd = [...articles];
+    deductStock(upd, s.items, +1);
     await db.deleteSale(id);
+    for (const a of upd) {
+      const orig = articles.find(x => x.id === a.id);
+      if (orig && orig.stock !== a.stock) await db.updateArticleStock(a.id, a.stock);
+    }
     await refresh();
     setDelConfirm(null);
     notify("Venta eliminada · Stock revertido");
@@ -1094,9 +1119,14 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) 
   const [showComp, setShowComp] = useState(false);
   const [compName, setCompName] = useState(""); const [compPrice, setCompPrice] = useState("");
   const [compIngr, setCompIngr] = useState([]); const [compQ, setCompQ] = useState(""); const [compDD, setCompDD] = useState(false);
+  const [comboQ, setComboQ] = useState(""); const [comboDD, setComboDD] = useState(false);
+  const [swapIdx, setSwapIdx] = useState(null); const [swapQ, setSwapQ] = useState("");
 
-  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id && !i.isComposite)) : [];
+  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id && !i.isComposite && !i.isComboItem)) : [];
   const compAvail = compQ ? articles.filter(a => a.name && a.name.toLowerCase().includes(compQ.toLowerCase())).slice(0, 8) : [];
+  const activeComboList = (combos || []).filter(c => c.active !== false);
+  const comboAvail = comboQ ? activeComboList.filter(c => c.name.toLowerCase().includes(comboQ.toLowerCase())).slice(0, 8) : activeComboList.slice(0, 8);
+  const swapAvail = swapQ ? articles.filter(a => a.name && a.name.toLowerCase().includes(swapQ.toLowerCase())).slice(0, 8) : [];
 
   const addExisting = (id, name, units, salePrice, purchasePrice, stock) => {
     setItems(prev => [...prev, { articleId: id, articleName: name, unit: (units || ["kg"])[0], quantity: 1, unitPrice: salePrice, origPrice: salePrice, costPrice: purchasePrice, subtotal: salePrice, profit: salePrice - purchasePrice, stock }]);
@@ -1118,6 +1148,22 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) 
     const price = parseFloat(compPrice);
     setItems(prev => [...prev, { articleId: "comp_" + uid(), articleName: compName.trim(), unit: "und", quantity: 1, unitPrice: price, origPrice: price, costPrice: compCost, subtotal: price, profit: price - compCost, isComposite: true, ingredients: compIngr.map(i => ({ ...i })) }]);
     setShowComp(false); setCompName(""); setCompPrice(""); setCompIngr([]);
+  };
+
+  const addComboToTicket = (c) => {
+    const gid = uid();
+    const comboSubtotal = c.items.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.salePrice || 0); }, 0);
+    const comboCost = c.items.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.purchasePrice || 0); }, 0);
+    const price = c.suggestedPrice || comboSubtotal;
+    const priceRow = { articleId: "combo_price_" + gid, articleName: c.name, unit: "und", quantity: 1, unitPrice: price, origPrice: price, costPrice: comboCost, subtotal: price, profit: price - comboCost, isComboPrice: true, comboGroupId: gid };
+    const stockRows = c.items.map(ci => { const a = articles.find(x => x.id === ci.articleId); return { articleId: ci.articleId, articleName: a?.name || ci.name, unit: ci.unit || (a?.units || ["kg"])[0], quantity: ci.qty, unitPrice: 0, origPrice: 0, costPrice: a?.purchasePrice || 0, subtotal: 0, profit: 0, isComboItem: true, comboGroupId: gid }; });
+    setItems(prev => [...prev, priceRow, ...stockRows]);
+    setComboQ(""); setComboDD(false);
+  };
+
+  const swapComboItem = (idx, a) => {
+    setItems(prev => prev.map((it, i) => i !== idx ? it : { ...it, articleId: a.id, articleName: a.name, costPrice: a.purchasePrice || 0, unit: (a.units || ["kg"])[0] }));
+    setSwapIdx(null); setSwapQ("");
   };
 
   const subtotal = items.reduce((s, i) => s + (i.subtotal || 0), 0);
@@ -1174,22 +1220,17 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) 
           </div>
 
           {/* COMBO SELECTOR */}
-          {(combos || []).filter(c => c.active !== false).length > 0 && (
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: "var(--tx3)", textTransform: "uppercase", alignSelf: "center" }}>Combos:</span>
-              {(combos || []).filter(c => c.active !== false).map(c => {
+          {activeComboList.length > 0 && (
+            <div className="fg" style={{ position: "relative", marginBottom: 10 }}>
+              <label className="fl">Agregar Combo</label>
+              <input className="fi" placeholder="Buscar combo..." value={comboQ} onChange={e => { setComboQ(e.target.value); setComboDD(true); }} onFocus={() => setComboDD(true)} onBlur={() => setTimeout(() => setComboDD(false), 250)} />
+              {comboDD && comboAvail.length > 0 && (<div className="dd">{comboAvail.map(c => {
                 const comboSubtotal = c.items.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.salePrice || 0); }, 0);
-                const comboCost = c.items.reduce((s, ci) => { const a = articles.find(x => x.id === ci.articleId); return s + (ci.qty || 0) * (a?.purchasePrice || 0); }, 0);
-                return (
-                  <button key={c.id} className="pm-chip" onClick={() => {
-                    const price = c.suggestedPrice || comboSubtotal;
-                    const ingr = c.items.map(ci => { const a = articles.find(x => x.id === ci.articleId); return { articleId: ci.articleId, name: a?.name || ci.name, unit: ci.unit || (a?.units || ["kg"])[0], qty: ci.qty, costPrice: a?.purchasePrice || 0 }; });
-                    setItems(prev => [...prev, { articleId: "combo_" + uid(), articleName: c.name, unit: "und", quantity: 1, unitPrice: price, origPrice: comboSubtotal, costPrice: comboCost, subtotal: price, profit: price - comboCost, isComposite: true, isCombo: true, ingredients: ingr }]);
-                  }} style={{ fontSize: 12 }}>
-                    {c.name} · <span style={{ fontWeight: 600, color: "var(--ac)" }}>{money(c.suggestedPrice || comboSubtotal)}</span>
-                  </button>
-                );
-              })}
+                return (<div key={c.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); addComboToTicket(c); }}>
+                  <span>{c.name} <span style={{ color: "var(--tx3)", fontSize: 11 }}>({c.items.length} artíc.)</span></span>
+                  <span style={{ fontWeight: 600, color: "var(--ac)", fontSize: 12 }}>{money(c.suggestedPrice || comboSubtotal)}</span>
+                </div>);
+              })}</div>)}
             </div>
           )}
 
@@ -1242,23 +1283,43 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) 
               {items.map((it, idx) => {
                 const art = articles.find(a => a.id === it.articleId);
                 const rn = it.articleName || art?.name || "";
+                if (it.isComboItem) {
+                  return (
+                    <div className="ti-r" key={it.articleId + "_" + idx} style={{ gridTemplateColumns: "2fr 60px 90px 36px 36px", paddingLeft: 16, background: "var(--bg3)", opacity: 0.9 }}>
+                      <div style={{ fontSize: 12, color: "var(--tx3)", alignSelf: "center" }}>└ {rn}</div>
+                      <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
+                      <span style={{ fontSize: 11, color: "var(--tx3)", alignSelf: "center" }}>{unitLabel(it.unit)}</span>
+                      <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                        <button className="btn-i" title="Cambiar artículo" onClick={() => { setSwapIdx(swapIdx === idx ? null : idx); setSwapQ(""); }} style={{ fontSize: 11, padding: 3 }}>⇄</button>
+                        {swapIdx === idx && (<div className="dd" style={{ top: "100%", right: 0, minWidth: 220, zIndex: 100 }}>
+                          <div style={{ padding: "6px 8px 4px" }}><input className="fi" autoFocus placeholder="Buscar..." value={swapQ} onChange={e => setSwapQ(e.target.value)} style={{ fontSize: 12, padding: "4px 8px" }} onBlur={() => setTimeout(() => setSwapIdx(null), 300)} /></div>
+                          {swapAvail.map(a => (<div key={a.id} className="dd-i" onMouseDown={(ev) => { ev.preventDefault(); swapComboItem(idx, a); }}><span style={{ fontSize: 12 }}>{a.name}</span><span style={{ fontSize: 11, color: "var(--tx3)" }}>{money(a.purchasePrice)}</span></div>))}
+                        </div>)}
+                      </div>
+                      <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                    </div>
+                  );
+                }
                 return (
                   <div className="ti-r" key={it.articleId || idx} style={{ gridTemplateColumns: discountMode === "item" ? "2fr 60px 80px 80px 80px 32px" : "2fr 70px 90px 100px 36px" }}>
                     <div>
-                      <div style={{ fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>{rn}{it.isComposite && <span className="comp-badge">Compuesto</span>}</div>
+                      <div style={{ fontWeight: 500, display: "flex", alignItems: "center", gap: 6 }}>{rn}{it.isComposite && <span className="comp-badge">Compuesto</span>}{it.isComboPrice && <span className="comp-badge" style={{ background: "var(--ac)", color: "#fff" }}>Combo</span>}</div>
                       <div style={{ fontSize: 11, color: "var(--ac)" }}>{money(it.unitPrice)}/{it.unit}
                         {discountMode === "item" && it.unitPrice !== it.origPrice && <span style={{ textDecoration: "line-through", color: "var(--tx3)", marginLeft: 4 }}>{money(it.origPrice)}</span>}
                       </div>
                       {it.isComposite && it.ingredients && <div style={{ fontSize: 10, color: "var(--tx3)" }}>{it.ingredients.map(i => `${i.name}(${i.qty}${i.unit})`).join(" + ")}</div>}
-                      {!it.isComposite && it.quantity > (it.stock || 9999) && <div style={{ fontSize: 10, color: "var(--rd)" }}>⚠ Stock: {it.stock}</div>}
+                      {!it.isComposite && !it.isComboPrice && it.quantity > (it.stock || 9999) && <div style={{ fontSize: 10, color: "var(--rd)" }}>⚠ Stock: {it.stock}</div>}
                     </div>
                     <input className="fi" type="number" step="0.01" min="0.01" value={it.quantity} onChange={e => updItem(idx, "quantity", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12 }} />
                     <select className="fs" value={it.unit} onChange={e => updItem(idx, "unit", e.target.value)} style={{ padding: "5px 7px", fontSize: 12 }}>
-                      {it.isComposite ? <option value="und">Unidad</option> : (art?.units || ["kg"]).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
+                      {it.isComposite || it.isComboPrice ? <option value="und">Unidad</option> : (art?.units || ["kg"]).map(u => <option key={u} value={u}>{unitLabel(u)}</option>)}
                     </select>
                     {discountMode === "item" && <input className="fi" type="number" step="0.01" min="0" value={it.unitPrice} onChange={e => updItem(idx, "unitPrice", parseFloat(e.target.value) || 0)} style={{ padding: "5px 7px", fontSize: 12, background: it.unitPrice !== it.origPrice ? "var(--ywL)" : "var(--bg2)" }} />}
                     <span style={{ fontWeight: 600 }}>{money(it.subtotal)}</span>
-                    <button className="btn-i" onClick={() => setItems(prev => prev.filter((_, i) => i !== idx))} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
+                    <button className="btn-i" onClick={() => {
+                      if (it.isComboPrice) { setItems(prev => prev.filter(i => i.comboGroupId !== it.comboGroupId)); }
+                      else { setItems(prev => prev.filter((_, i) => i !== idx)); }
+                    }} style={{ color: "var(--rd)", border: "none", padding: 3 }}>{I.trash}</button>
                   </div>
                 );
               })}

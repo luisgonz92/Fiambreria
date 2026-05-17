@@ -49,3 +49,13 @@ ALTER TABLE public.sale_tickets
   ADD COLUMN IF NOT EXISTS pm1_amount numeric,
   ADD COLUMN IF NOT EXISTS pm2_amount numeric,
   ADD COLUMN IF NOT EXISTS cash_received numeric;
+
+
+-- 3. COLUMNA combo_id en sale_ticket_items
+--    Agrupa los artículos de stock que pertenecen a una instancia
+--    de combo dentro de una venta. Los artículos con el mismo
+--    combo_id forman un combo. La línea de precio del combo
+--    (isComboPrice) NO se guarda en esta tabla.
+-- ------------------------------------------------------------
+ALTER TABLE public.sale_ticket_items
+  ADD COLUMN IF NOT EXISTS combo_id text;
