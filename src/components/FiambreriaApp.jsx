@@ -17,12 +17,20 @@ const unitLabel = (v) => UNITS.find(u => u.value === v)?.label || v;
 const IVA_RATES = [{ value: 0, label: "0% (Exento)" }, { value: 10.5, label: "10.5%" }, { value: 21, label: "21%" }, { value: 27, label: "27%" }];
 const calcSale = (pp, iva, margin) => Math.round((pp || 0) * (1 + (iva || 0) / 100) * (1 + (margin || 0) / 100) * 100) / 100;
 
-const getPriceHistory = (articleId, purchases) => {
+const getPriceHistory = (articleId, purchases, phTable) => {
   const entries = [];
+  const seen = new Set();
+  (phTable || []).forEach(ph => {
+    if (ph.articleId === articleId && ph.price > 0) {
+      const key = ph.date + "_" + ph.price + "_" + ph.supplier;
+      if (!seen.has(key)) { seen.add(key); entries.push({ date: ph.date, price: ph.price, prevPrice: ph.prevPrice, unit: ph.unit || "kg", supplier: ph.supplier }); }
+    }
+  });
   (purchases || []).forEach(p => {
     (p.items || []).forEach(it => {
       if (it.articleId === articleId && it.unitCost > 0) {
-        entries.push({ date: p.date, price: it.unitCost, unit: it.unit || "kg", supplier: p.supplier, invoiceNum: p.invoiceNum });
+        const key = p.date + "_" + it.unitCost + "_" + p.supplier;
+        if (!seen.has(key)) { seen.add(key); entries.push({ date: p.date, price: it.unitCost, unit: it.unit || "kg", supplier: p.supplier }); }
       }
     });
   });
@@ -32,7 +40,7 @@ const getPriceHistory = (articleId, purchases) => {
 // ============ SUPABASE DB LAYER ============
 const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: Number(r.iva)||21, isCorte: !!r.is_corte, category: r.category_name||r.category||'Otros' });
 const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
-const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit) })) });
+const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit) })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
 const mapMerma = (r) => ({ ...r, lossValue: Number(r.loss_value)||0, items: r.items||[] });
 const mapDevol = (r) => ({ ...r, purchaseId: r.purchase_id, invoiceNum: r.invoice_num, totalValue: Number(r.total_value)||0, items: r.items||[] });
@@ -60,8 +68,8 @@ const db = {
   async deletePurchase(id) { await supabase.from('purchase_invoices').delete().eq('id', id); },
   // Sales
   async getSales() { const { data } = await supabase.from('sale_tickets').select('*, sale_ticket_items(*)').order('date', { ascending: false }); return (data||[]).map(mapSale); },
-  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
-  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
+  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
+  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); await supabase.from('sale_ticket_items').insert(items.map(i => ({ sale_ticket_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit }))); },
   async deleteSale(id) { await supabase.from('sale_tickets').delete().eq('id', id); },
   // Expenses
   async getExpenses() { const { data } = await supabase.from('expenses').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapExp); },
@@ -87,6 +95,9 @@ const db = {
   async insertCombo(c) { await supabase.from('combos').insert({ name: c.name, items: c.items, suggested_price: c.suggestedPrice, active: c.active !== false }); },
   async updateCombo(id, c) { await supabase.from('combos').update({ name: c.name, items: c.items, suggested_price: c.suggestedPrice, active: c.active }).eq('id', id); },
   async deleteCombo(id) { await supabase.from('combos').delete().eq('id', id); },
+  // Price History
+  async getPriceHistory() { const { data } = await supabase.from('price_history').select('*').order('date', { ascending: true }); return (data||[]).map(r => ({ id: r.id, articleId: r.article_id, articleName: r.article_name, date: r.date, price: Number(r.price)||0, prevPrice: Number(r.prev_price)||0, supplier: r.supplier, unit: r.unit })); },
+  async insertPriceHistoryEntries(entries) { if (!entries?.length) return; await supabase.from('price_history').insert(entries.map(e => ({ article_id: e.articleId, article_name: e.articleName, date: e.date, price: e.price, prev_price: e.prevPrice||0, supplier: e.supplier, unit: e.unit }))).catch(() => {}); },
 };
 
 const I = {
@@ -132,12 +143,13 @@ export default function App() {
   const [mermas, setMermas] = useState([]);
   const [devoluciones, setDevoluciones] = useState([]);
   const [combos, setCombos] = useState([]);
+  const [priceHistory, setPriceHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
     (async () => {
-      const [a, s, p, e, pm, m, dv, cb] = await Promise.all([db.getArticles(), db.getSales(), db.getPurchases(), db.getExpenses(), db.getPayMethods(), db.getMermas(), db.getDevoluciones(), db.getCombos()]);
+      const [a, s, p, e, pm, m, dv, cb, ph] = await Promise.all([db.getArticles(), db.getSales(), db.getPurchases(), db.getExpenses(), db.getPayMethods(), db.getMermas(), db.getDevoluciones(), db.getCombos(), db.getPriceHistory().catch(() => [])]);
       setArticles(a);
       setSales(s);
       setPurchases(p);
@@ -146,12 +158,13 @@ export default function App() {
       setMermas(m);
       setDevoluciones(dv);
       setCombos(cb);
+      setPriceHistory(ph);
       setLoading(false);
     })();
   }, []);
 
   const notify = (m) => { setToast(m); setTimeout(() => setToast(null), 3000); };
-  const refresh = useCallback(async () => { const [a,s,p,e,pm,m,dv,cb] = await Promise.all([db.getArticles(),db.getSales(),db.getPurchases(),db.getExpenses(),db.getPayMethods(),db.getMermas(),db.getDevoluciones(),db.getCombos()]); setArticles(a);setSales(s);setPurchases(p);setExpenses(e);setPayMethods(pm);setMermas(m);setDevoluciones(dv);setCombos(cb); }, []);
+  const refresh = useCallback(async () => { const [a,s,p,e,pm,m,dv,cb,ph] = await Promise.all([db.getArticles(),db.getSales(),db.getPurchases(),db.getExpenses(),db.getPayMethods(),db.getMermas(),db.getDevoluciones(),db.getCombos(),db.getPriceHistory().catch(()=>[])]); setArticles(a);setSales(s);setPurchases(p);setExpenses(e);setPayMethods(pm);setMermas(m);setDevoluciones(dv);setCombos(cb);setPriceHistory(ph); }, []);
 
   const nav = [
     { id: "dashboard", label: "Dashboard", icon: I.dashboard },
@@ -213,8 +226,8 @@ export default function App() {
           </header>
           <div className="page">
             {pg === "dashboard" && <Dashboard articles={articles} sales={sales} purchases={purchases} expenses={expenses} mermas={mermas} devoluciones={devoluciones} setPg={setPg} lowStock={lowStock} outStock={outStock} />}
-            {pg === "inventory" && <InventoryPage articles={articles} purchases={purchases} refresh={refresh} notify={notify} />}
-            {pg === "purchases" && <PurchasesPage articles={articles} purchases={purchases} refresh={refresh} devoluciones={devoluciones} notify={notify} />}
+            {pg === "inventory" && <InventoryPage articles={articles} purchases={purchases} priceHistory={priceHistory} refresh={refresh} notify={notify} />}
+            {pg === "purchases" && <PurchasesPage articles={articles} purchases={purchases} priceHistory={priceHistory} refresh={refresh} devoluciones={devoluciones} notify={notify} />}
             {pg === "sales" && <SalesPage articles={articles} sales={sales} refresh={refresh} payMethods={payMethods} combos={combos} notify={notify} />}
             {pg === "expenses" && <ExpensesPage expenses={expenses} refresh={refresh} notify={notify} />}
             {pg === "merma" && <MermaPage articles={articles} mermas={mermas} refresh={refresh} notify={notify} />}
@@ -248,7 +261,7 @@ export default function App() {
               }}
               notify={notify} />}
             {pg === "combos" && <CombosPage articles={articles} combos={combos} refresh={refresh} notify={notify} />}
-            {pg === "reports" && <ReportsPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} mermas={mermas} devoluciones={devoluciones} payMethods={payMethods} />}
+            {pg === "reports" && <ReportsPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} mermas={mermas} devoluciones={devoluciones} payMethods={payMethods} priceHistory={priceHistory} />}
             {pg === "paymethods" && <PayMethodsPage payMethods={payMethods} refresh={refresh} notify={notify} />}
             {pg === "advisor" && <AIAdvisorPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} />}
           </div>
@@ -324,7 +337,7 @@ function Dashboard({ articles, sales, purchases, expenses, mermas, devoluciones,
 }
 
 // ============ INVENTORY (ARTICLES) ============
-function InventoryPage({ articles, purchases, refresh, notify }) {
+function InventoryPage({ articles, purchases, priceHistory, refresh, notify }) {
   const [modal, setModal] = useState(null);
   const [search, setSearch] = useState("");
   const [catF, setCatF] = useState("");
@@ -429,12 +442,12 @@ function InventoryPage({ articles, purchases, refresh, notify }) {
         </div></div>
       </div>
 
-      {modal && <ArticleModal art={modal} articles={articles} purchases={purchases} onSave={handleSave} onClose={() => setModal(null)} />}
+      {modal && <ArticleModal art={modal} articles={articles} purchases={purchases} priceHistory={priceHistory} onSave={handleSave} onClose={() => setModal(null)} />}
     </div>
   );
 }
 
-function ArticleModal({ art, articles, purchases, onSave, onClose }) {
+function ArticleModal({ art, articles, purchases, priceHistory, onSave, onClose }) {
   const [f, setF] = useState({ ...art, units: art.units || ["kg"], iva: art.iva ?? 21 });
 
   const set = (k, v) => {
@@ -457,7 +470,7 @@ function ArticleModal({ art, articles, purchases, onSave, onClose }) {
   const priceWithIva = (f.purchasePrice || 0) * (1 + (f.iva || 0) / 100);
 
   // Price history
-  const history = f.id ? getPriceHistory(f.id, purchases) : [];
+  const history = f.id ? getPriceHistory(f.id, purchases, priceHistory) : [];
   const lastEntry = history.length > 0 ? history[history.length - 1] : null;
   const prevEntry = history.length > 1 ? history[history.length - 2] : null;
   const priceDiff = lastEntry && prevEntry ? lastEntry.price - prevEntry.price : 0;
@@ -562,7 +575,7 @@ function ArticleModal({ art, articles, purchases, onSave, onClose }) {
 }
 
 // ============ PURCHASES ============
-function PurchasesPage({ articles, purchases, refresh, devoluciones, notify }) {
+function PurchasesPage({ articles, purchases, priceHistory, refresh, devoluciones, notify }) {
   const [modal, setModal] = useState(false);
   const [editPurch, setEditPurch] = useState(null);
   const [view, setView] = useState(null);
@@ -579,6 +592,13 @@ function PurchasesPage({ articles, purchases, refresh, devoluciones, notify }) {
       } else {
         await db.insertPurchase(purchaseData, purchaseData.items);
         if (_devolucionId) { await db.updateDevolucionStatus(_devolucionId, "repuesto"); }
+        // Record price history entries
+        const phEntries = (purchaseData.items || []).map(item => {
+          const oldArt = articles.find(a => a.id === item.articleId);
+          if (!oldArt || !(item.unitCost > 0)) return null;
+          return { articleId: item.articleId, articleName: item.articleName, date: new Date().toISOString(), price: item.unitCost, prevPrice: oldArt.purchasePrice || 0, supplier: purchaseData.supplier, unit: item.unit };
+        }).filter(Boolean);
+        if (phEntries.length > 0) db.insertPriceHistoryEntries(phEntries);
         notify(purchaseData.isReposition ? "Reposición registrada" : "Compra registrada: " + money(purchaseData.total));
       }
       await refresh();
@@ -644,7 +664,7 @@ function PurchasesPage({ articles, purchases, refresh, devoluciones, notify }) {
         </table>
       </div></div></div>
 
-      {modal && <PurchaseModal articles={articles} purchases={purchases} editData={editPurch} pendingDevols={pendingDevols} onSave={handleSave} onClose={() => { setModal(false); setEditPurch(null); }} />}
+      {modal && <PurchaseModal articles={articles} purchases={purchases} priceHistory={priceHistory} editData={editPurch} pendingDevols={pendingDevols} onSave={handleSave} onClose={() => { setModal(false); setEditPurch(null); }} />}
       {view && (
         <div className="mo" onClick={() => setView(null)}>
           <div className="md" onClick={e => e.stopPropagation()}>
@@ -668,7 +688,7 @@ function PurchasesPage({ articles, purchases, refresh, devoluciones, notify }) {
   );
 }
 
-function PurchaseModal({ articles, purchases, editData, pendingDevols, onSave, onClose }) {
+function PurchaseModal({ articles, purchases, priceHistory, editData, pendingDevols, onSave, onClose }) {
   const [supplier, setSupplier] = useState(editData?.supplier || "");
   const [invoiceNum, setInvoiceNum] = useState(editData?.invoiceNum || "");
   const [items, setItems] = useState(editData ? editData.items.map(it => ({ ...it, _key: uid() })) : []);
@@ -871,7 +891,7 @@ function PurchaseModal({ articles, purchases, editData, pendingDevols, onSave, o
                   <div className="ti-r ti-h" style={{ gridTemplateColumns: "2fr 60px 80px 55px 90px 90px 36px" }}><span>Artículo</span><span>Cant.</span><span>Unidad</span><span>IVA</span><span>Costo U.</span><span>Subtotal</span><span></span></div>
                   {items.map((it, idx) => {
                     const resolvedName = it.articleName || allArticles.find(a => a.id === it.articleId)?.name || "";
-                    const ph = getPriceHistory(it.articleId, purchases || []);
+                    const ph = getPriceHistory(it.articleId, purchases || [], priceHistory || []);
                     const lastP = ph.length > 0 ? ph[ph.length - 1] : null;
                     const costUp = lastP && it.unitCost > 0 && it.unitCost > lastP.price;
                     const costDn = lastP && it.unitCost > 0 && it.unitCost < lastP.price;
@@ -2255,7 +2275,7 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
 }
 
 // ============ REPORTS ============
-function ReportsPage({ articles, sales, purchases, expenses, mermas, devoluciones, payMethods }) {
+function ReportsPage({ articles, sales, purchases, expenses, mermas, devoluciones, payMethods, priceHistory }) {
   const [tab, setTab] = useState("pnl");
   const [period, setPeriod] = useState("all");
   const [priceArtId, setPriceArtId] = useState("");
@@ -2764,7 +2784,7 @@ function ReportsPage({ articles, sales, purchases, expenses, mermas, devolucione
       )}
 
       {tab === "precios-r" && (() => {
-        const allHistory = priceArtId ? getPriceHistory(priceArtId, purchases) : [];
+        const allHistory = priceArtId ? getPriceHistory(priceArtId, purchases, priceHistory) : [];
         const filteredH = allHistory.filter(h =>
           (!priceProv || h.supplier === priceProv) &&
           (period === "all" || (() => { const now = new Date(), start = new Date(); if (period === "today") start.setHours(0,0,0,0); else if (period === "week") start.setDate(now.getDate()-7); else if (period === "month") start.setMonth(now.getMonth()-1); return new Date(h.date) >= start; })())
