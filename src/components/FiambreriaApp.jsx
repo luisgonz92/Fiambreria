@@ -1126,7 +1126,7 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) 
   const compAvail = compQ ? articles.filter(a => a.name && a.name.toLowerCase().includes(compQ.toLowerCase())).slice(0, 8) : [];
   const activeComboList = (combos || []).filter(c => c.active !== false);
   const comboAvail = comboQ ? activeComboList.filter(c => c.name.toLowerCase().includes(comboQ.toLowerCase())).slice(0, 8) : activeComboList.slice(0, 8);
-  const swapAvail = swapQ ? articles.filter(a => a.name && a.name.toLowerCase().includes(swapQ.toLowerCase())).slice(0, 8) : [];
+  const swapAvail = articles.filter(a => a.name && (!swapQ || a.name.toLowerCase().includes(swapQ.toLowerCase()))).slice(0, 8);
 
   const addExisting = (id, name, units, salePrice, purchasePrice, stock) => {
     setItems(prev => [...prev, { articleId: id, articleName: name, unit: (units || ["kg"])[0], quantity: 1, unitPrice: salePrice, origPrice: salePrice, costPrice: purchasePrice, subtotal: salePrice, profit: salePrice - purchasePrice, stock }]);
@@ -1276,7 +1276,7 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) 
               )}
             </div>
 
-            <div className="ti">
+            <div className="ti" style={swapIdx !== null ? { overflow: "visible" } : {}}>
               <div className="ti-r ti-h" style={{ gridTemplateColumns: discountMode === "item" ? "2fr 60px 80px 80px 80px 32px" : "2fr 70px 90px 100px 36px" }}>
                 <span>Artículo</span><span>Cant.</span><span>Unidad</span>{discountMode === "item" && <span>P.Unit.</span>}<span>Subtotal</span><span></span>
               </div>
