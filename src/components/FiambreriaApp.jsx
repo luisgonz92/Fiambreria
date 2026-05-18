@@ -38,7 +38,7 @@ const getPriceHistory = (articleId, purchases, phTable) => {
 };
 
 // ============ SUPABASE DB LAYER ============
-const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: Number(r.iva)||21, isCorte: !!r.is_corte, category: r.category_name||r.category||'Otros' });
+const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: r.iva != null ? Number(r.iva) : 21, isCorte: !!r.is_corte, category: r.category_name||r.category||'Otros' });
 const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
 const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit), isComboItem: !!i.combo_id, comboGroupId: i.combo_id||null })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
@@ -234,12 +234,11 @@ export default function App() {
             {pg === "merma" && <MermaPage articles={articles} mermas={mermas} refresh={refresh} notify={notify} />}
             {pg === "devoluciones" && <DevolucionesPage articles={articles} purchases={purchases} devoluciones={devoluciones}
               onSave={async (dev) => {
-                // Stock deduction at App level - guaranteed fresh articles
-                const upd = articles.map(a => {
-                  const di = (dev.items || []).find(i => i.articleId === a.id);
-                  return di ? { ...a, stock: Math.max(0, (a.stock || 0) - (di.devQty || 0)) } : a;
-                });
                 await db.insertDevolucion(dev);
+                for (const di of (dev.items || [])) {
+                  const a = articles.find(x => x.id === di.articleId);
+                  if (a) await db.updateArticleStock(a.id, Math.max(0, (a.stock || 0) - (di.devQty || 0)));
+                }
                 await refresh();
                 notify(`Devolución registrada · Stock descontado`);
               }}
@@ -247,11 +246,11 @@ export default function App() {
                 const d = devoluciones.find(x => x.id === id);
                 if (!d) return;
                 if (isPrevMonth(d.date)) { notify("⚠ Período cerrado"); return false; }
-                const upd = articles.map(a => {
-                  const di = (d.items || []).find(i => i.articleId === a.id);
-                  return di ? { ...a, stock: (a.stock || 0) + (di.devQty || 0) } : a;
-                });
                 await db.deleteDevolucion(id);
+                for (const di of (d.items || [])) {
+                  const a = articles.find(x => x.id === di.articleId);
+                  if (a) await db.updateArticleStock(a.id, (a.stock || 0) + (di.devQty || 0));
+                }
                 await refresh();
                 notify("Devolución eliminada · Stock revertido");
                 return true;
