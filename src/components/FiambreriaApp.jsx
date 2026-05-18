@@ -235,10 +235,7 @@ export default function App() {
             {pg === "devoluciones" && <DevolucionesPage articles={articles} purchases={purchases} devoluciones={devoluciones}
               onSave={async (dev) => {
                 await db.insertDevolucion(dev);
-                for (const di of (dev.items || [])) {
-                  const a = articles.find(x => x.id === di.articleId);
-                  if (a) await db.updateArticleStock(a.id, Math.max(0, (a.stock || 0) - (di.devQty || 0)));
-                }
+                await Promise.all((dev.items || []).map(di => { const a = articles.find(x => x.id === di.articleId); return a ? db.updateArticleStock(a.id, Math.max(0, (a.stock || 0) - (di.devQty || 0))) : Promise.resolve(); }));
                 await refresh();
                 notify(`Devolución registrada · Stock descontado`);
               }}
@@ -247,10 +244,7 @@ export default function App() {
                 if (!d) return;
                 if (isPrevMonth(d.date)) { notify("⚠ Período cerrado"); return false; }
                 await db.deleteDevolucion(id);
-                for (const di of (d.items || [])) {
-                  const a = articles.find(x => x.id === di.articleId);
-                  if (a) await db.updateArticleStock(a.id, (a.stock || 0) + (di.devQty || 0));
-                }
+                await Promise.all((d.items || []).map(di => { const a = articles.find(x => x.id === di.articleId); return a ? db.updateArticleStock(a.id, (a.stock || 0) + (di.devQty || 0)) : Promise.resolve(); }));
                 await refresh();
                 notify("Devolución eliminada · Stock revertido");
                 return true;
@@ -999,10 +993,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
         await db.insertSale(saleData, saleData.items);
         notify("Venta registrada: " + money(saleData.total));
       }
-      for (const a of upd) {
-        const orig = articles.find(x => x.id === a.id);
-        if (orig && orig.stock !== a.stock) await db.updateArticleStock(a.id, a.stock);
-      }
+      await Promise.all(upd.filter(a => { const orig = articles.find(x => x.id === a.id); return orig && orig.stock !== a.stock; }).map(a => db.updateArticleStock(a.id, a.stock)));
       await refresh();
     } catch(e) { notify("Error: "+e.message); }
     setModal(false); setEditSale(null);
@@ -1015,10 +1006,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
     const upd = [...articles];
     deductStock(upd, s.items, +1);
     await db.deleteSale(id);
-    for (const a of upd) {
-      const orig = articles.find(x => x.id === a.id);
-      if (orig && orig.stock !== a.stock) await db.updateArticleStock(a.id, a.stock);
-    }
+    await Promise.all(upd.filter(a => { const orig = articles.find(x => x.id === a.id); return orig && orig.stock !== a.stock; }).map(a => db.updateArticleStock(a.id, a.stock)));
     await refresh();
     setDelConfirm(null);
     notify("Venta eliminada · Stock revertido");
