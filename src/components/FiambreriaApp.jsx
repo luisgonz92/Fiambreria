@@ -952,7 +952,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
   const [search, setSearch] = useState("");
   const [pmFilter, setPmFilter] = useState("");
   const [delConfirm, setDelConfirm] = useState(null);
-  const [showProfit, setShowProfit] = useState(true);
+  const [showProfit, setShowProfit] = useState(false);
   const sorted = useMemo(() => [...sales].sort((a, b) => new Date(b.date) - new Date(a.date)), [sales]);
   const filtered = sorted.filter(s =>
     ((s.client || "").toLowerCase().includes(search.toLowerCase()) || s.items.some(i => (i.articleName || "").toLowerCase().includes(search.toLowerCase())))
