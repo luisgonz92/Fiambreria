@@ -114,6 +114,7 @@ const I = {
   x: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>,
   menu: <svg width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M3 12h18M3 6h18M3 18h18"/></svg>,
   eye: <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>,
+  eyeOff: <svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><path d="M1 1l22 22"/></svg>,
   warn: <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>,
   arrow: <svg width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>,
   check: <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>,
@@ -951,6 +952,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
   const [search, setSearch] = useState("");
   const [pmFilter, setPmFilter] = useState("");
   const [delConfirm, setDelConfirm] = useState(null);
+  const [showProfit, setShowProfit] = useState(true);
   const sorted = useMemo(() => [...sales].sort((a, b) => new Date(b.date) - new Date(a.date)), [sales]);
   const filtered = sorted.filter(s =>
     ((s.client || "").toLowerCase().includes(search.toLowerCase()) || s.items.some(i => (i.articleName || "").toLowerCase().includes(search.toLowerCase())))
@@ -1033,7 +1035,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
       </div>
       <div className="card"><div style={{ padding: 0 }}><div className="tw">
         <table>
-          <thead><tr><th>#</th><th>Fecha</th><th>Cliente</th><th>Pago</th><th>Total</th><th>Ganancia</th><th style={{ width: 110 }}></th></tr></thead>
+          <thead><tr><th>#</th><th>Fecha</th><th>Cliente</th><th>Pago</th><th>Total</th><th><div style={{ display: "flex", alignItems: "center", gap: 6 }}>Ganancia<button onClick={() => setShowProfit(p => !p)} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, color: "var(--tx3)", display: "flex", alignItems: "center", lineHeight: 1 }} title={showProfit ? "Ocultar ganancia" : "Mostrar ganancia"}>{showProfit ? I.eye : I.eyeOff}</button></div></th><th style={{ width: 110 }}></th></tr></thead>
           <tbody>
             {filtered.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay ventas registradas</p></div></td></tr> :
               filtered.map((s) => (
@@ -1043,7 +1045,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
                   <td style={{ fontWeight: 500 }}>{s.client || "—"}</td>
                   <td><span className="pm-badge">{pmName(s.payMethod)}</span></td>
                   <td style={{ fontWeight: 600 }}>{money(s.total)}</td>
-                  <td><span className="badge b-gn">{money(s.profit)}</span></td>
+                  <td><span className="badge b-gn">{showProfit ? money(s.profit) : "$ ••••••"}</span></td>
                   <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                     <button className="btn-i" onClick={() => setView(s)}>{I.eye}</button>
                     {isPrevMonth(s.date) ? <span className="lock-badge">{I.lock} Cerrado</span> : (<>
@@ -1062,7 +1064,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
         </table>
       </div></div></div>
 
-      {modal && <SaleModal articles={articles} payMethods={activePM} combos={combos} editData={editSale} onSave={handleSave} onClose={() => { setModal(false); setEditSale(null); }} />}
+      {modal && <SaleModal articles={articles} payMethods={activePM} combos={combos} editData={editSale} onSave={handleSave} onClose={() => { setModal(false); setEditSale(null); }} showProfit={showProfit} />}
       {view && (
         <div className="mo" onClick={() => setView(null)}>
           <div className="md" onClick={e => e.stopPropagation()}>
@@ -1075,10 +1077,10 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
               </div>
               <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Unidad</th><th>P. Venta</th><th>Subtotal</th><th>Ganancia</th></tr></thead>
                 <tbody>{view.items.map((it, i) => (
-                  <tr key={i}><td style={{ fontWeight: 500 }}>{it.articleName}</td><td>{it.quantity}</td><td>{unitLabel(it.unit)}</td><td>{money(it.unitPrice)}</td><td style={{ fontWeight: 600 }}>{money(it.subtotal)}</td><td><span className="badge b-gn">{money(it.profit)}</span></td></tr>
+                  <tr key={i}><td style={{ fontWeight: 500 }}>{it.articleName}</td><td>{it.quantity}</td><td>{unitLabel(it.unit)}</td><td>{money(it.unitPrice)}</td><td style={{ fontWeight: 600 }}>{money(it.subtotal)}</td><td><span className="badge b-gn">{showProfit ? money(it.profit) : "$ ••••••"}</span></td></tr>
                 ))}</tbody></table>
               <div className="tt" style={{ marginTop: 14 }}>
-                <div><span className="tt-l">Total</span><div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {money(view.profit)}</div></div>
+                <div><span className="tt-l">Total</span><div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {showProfit ? money(view.profit) : "$ ••••••"}</div></div>
                 <span className="tt-v">{money(view.total)}</span>
               </div>
             </div>
@@ -1089,7 +1091,7 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
   );
 }
 
-function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) {
+function SaleModal({ articles, payMethods, combos, editData, onSave, onClose, showProfit }) {
   const [client, setClient] = useState(editData?.client || "");
   const [pm1, setPm1] = useState(editData?.payMethod || payMethods[0]?.id || "");
   const [pm1Amount, setPm1Amount] = useState("");
@@ -1324,7 +1326,7 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose }) 
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 18, fontWeight: 700, marginTop: 6, paddingTop: 6, borderTop: "2px solid var(--br)", fontFamily: "'Fraunces',serif" }}>
                 <span>Total</span><span style={{ color: "var(--ac)" }}>{money(total)}</span>
               </div>
-              <div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {money(profit)}</div>
+              <div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {showProfit ? money(profit) : "$ ••••••"}</div>
             </div>
 
             {/* PAYMENT */}
