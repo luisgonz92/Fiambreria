@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { supabase } from '../lib/supabase';
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -2223,9 +2223,9 @@ function AIAdvisorPage({ articles, sales, purchases, expenses, mermas, devolucio
   const [chatHistory, setChatHistory] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
-  const chatEndRef = React.useRef(null);
+  const chatEndRef = useRef(null);
 
-  React.useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
 
   const buildContext = () => {
     const now = new Date();
