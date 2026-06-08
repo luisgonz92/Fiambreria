@@ -38,7 +38,7 @@ const getPriceHistory = (articleId, purchases, phTable) => {
 };
 
 // ============ SUPABASE DB LAYER ============
-const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: r.iva != null ? Number(r.iva) : 21, isCorte: !!r.is_corte, category: r.category_name||r.category||'Otros' });
+const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: r.iva != null ? Number(r.iva) : 21, isCorte: !!r.is_corte, category: (r.categories && r.categories.name) || r.category_name||r.category||'Otros', active: r.active !== false });
 const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
 const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit), isComboItem: !!i.combo_id, comboGroupId: i.combo_id||null })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
@@ -48,7 +48,7 @@ const mapCombo = (r) => ({ ...r, suggestedPrice: Number(r.suggested_price)||0, i
 
 const db = {
   // Articles
-  async getArticles() { const { data } = await supabase.from('v_articles').select('*'); return (data||[]).map(mapArt); },
+  async getArticles() { const { data } = await supabase.from('articles').select('*, categories(name)').order('name'); return (data||[]).map(mapArt); },
   async insertArticle(a) {
     const { data: cats } = await supabase.from('categories').select('id,name');
     const cat = (cats||[]).find(c => c.name === a.category);
@@ -58,7 +58,7 @@ const db = {
   async updateArticle(id, a) {
     const { data: cats } = await supabase.from('categories').select('id,name');
     const cat = (cats||[]).find(c => c.name === a.category);
-    await supabase.from('articles').update({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5, iva: a.iva??21, is_corte: !!a.isCorte }).eq('id', id);
+    await supabase.from('articles').update({ name: a.name, category_id: cat?.id||null, units: a.units||['kg'], purchase_price: a.purchasePrice||0, margin_percent: a.marginPercent||30, sale_price: a.salePrice||0, stock: a.stock||0, min_stock: a.minStock||5, iva: a.iva??21, is_corte: !!a.isCorte, active: a.active !== false }).eq('id', id);
   },
   async deleteArticle(id) { await supabase.from('articles').update({ active: false }).eq('id', id); },
   // Purchases
@@ -68,13 +68,13 @@ const db = {
   async deletePurchase(id) { await supabase.from('purchase_invoices').delete().eq('id', id); },
   // Sales
   async getSales() { const { data } = await supabase.from('sale_tickets').select('*, sale_ticket_items(*)').order('date', { ascending: false }); return (data||[]).map(mapSale); },
-  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: t.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
-  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
+  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: t.id, article_id: i.isComposite ? null : (i.articleId||null), article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
+  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: id, article_id: i.isComposite ? null : (i.articleId||null), article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
   async deleteSale(id) { await supabase.from('sale_tickets').delete().eq('id', id); },
   // Expenses
   async getExpenses() { const { data } = await supabase.from('expenses').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapExp); },
-  async insertExpense(e) { await supabase.from('expenses').insert({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount }); },
-  async updateExpense(id, e) { await supabase.from('expenses').update({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount }).eq('id', id); },
+  async insertExpense(e) { await supabase.from('expenses').insert({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount, date: e.date || new Date().toISOString() }); },
+  async updateExpense(id, e) { await supabase.from('expenses').update({ description: e.description, category: e.category, type: e.type, frequency: e.frequency, amount: e.amount, date: e.date || new Date().toISOString() }).eq('id', id); },
   async deleteExpense(id) { await supabase.from('expenses').update({ active: false }).eq('id', id); },
   // Pay Methods
   async getPayMethods() { const { data } = await supabase.from('pay_methods').select('*').order('created_at'); return data||[]; },
@@ -182,8 +182,8 @@ export default function App() {
     { id: "advisor", label: "Asesor IA", icon: I.brain },
   ];
 
-  const lowStock = articles.filter(a => a.stock > 0 && a.stock <= (a.minStock || 5));
-  const outStock = articles.filter(a => a.stock <= 0 && a.purchasePrice > 0);
+  const lowStock = articles.filter(a => a.active !== false && a.stock > 0 && a.stock <= (a.minStock || 5));
+  const outStock = articles.filter(a => a.active !== false && a.stock <= 0 && a.purchasePrice > 0);
 
   if (loading) return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", background: "var(--bg)" }}>
@@ -258,7 +258,7 @@ export default function App() {
             {pg === "combos" && <CombosPage articles={articles} combos={combos} refresh={refresh} notify={notify} />}
             {pg === "reports" && <ReportsPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} mermas={mermas} devoluciones={devoluciones} payMethods={payMethods} priceHistory={priceHistory} />}
             {pg === "paymethods" && <PayMethodsPage payMethods={payMethods} refresh={refresh} notify={notify} />}
-            {pg === "advisor" && <AIAdvisorPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} />}
+            {pg === "advisor" && <AIAdvisorPage articles={articles} sales={sales} purchases={purchases} expenses={expenses} mermas={mermas} devoluciones={devoluciones} />}
           </div>
         </main>
         {toast && <div className="toast">{toast}</div>}
@@ -337,9 +337,10 @@ function InventoryPage({ articles, purchases, priceHistory, refresh, notify }) {
   const [search, setSearch] = useState("");
   const [catF, setCatF] = useState("");
   const [sort, setSort] = useState("name");
+  const [activeFilter, setActiveFilter] = useState("active");
 
   const filtered = articles
-    .filter(a => a.name.toLowerCase().includes(search.toLowerCase()) && (!catF || a.category === catF))
+    .filter(a => a.name.toLowerCase().includes(search.toLowerCase()) && (!catF || a.category === catF) && (activeFilter === "all" || (activeFilter === "active" ? a.active !== false : a.active === false)))
     .sort((a, b) => {
       if (sort === "name") return a.name.localeCompare(b.name);
       if (sort === "stock-low") return a.stock - b.stock;
@@ -348,8 +349,9 @@ function InventoryPage({ articles, purchases, priceHistory, refresh, notify }) {
       return 0;
     });
 
-  const totalVal = articles.reduce((s, a) => s + (a.stock * (a.salePrice || 0)), 0);
-  const totalCost = articles.reduce((s, a) => s + (a.stock * (a.purchasePrice || 0)), 0);
+  const activeArts = articles.filter(a => a.active !== false);
+  const totalVal = activeArts.reduce((s, a) => s + (a.stock * (a.salePrice || 0)), 0);
+  const totalCost = activeArts.reduce((s, a) => s + (a.stock * (a.purchasePrice || 0)), 0);
 
   const blank = { name: "", category: "Otros", units: ["kg"], iva: 21, marginPercent: 30, minStock: 5, stock: 0, purchasePrice: 0, salePrice: 0, isCorte: false };
 
@@ -376,7 +378,7 @@ function InventoryPage({ articles, purchases, priceHistory, refresh, notify }) {
   return (
     <div>
       <div className="kpi-g">
-        <div className="kpi kpi-o"><div className="kpi-l">Total Artículos</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{articles.length}</div></div>
+        <div className="kpi kpi-o"><div className="kpi-l">Total Artículos</div><div className="kpi-val" style={{ color: "var(--ac)" }}>{activeArts.length}</div><div className="kpi-s">{articles.length - activeArts.length > 0 ? `${articles.length - activeArts.length} inactivos` : "Todos activos"}</div></div>
         <div className="kpi kpi-v"><div className="kpi-l">Valor Inventario (Venta)</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(totalVal)}</div></div>
         <div className="kpi kpi-y"><div className="kpi-l">Costo Inventario</div><div className="kpi-val">{money(totalCost)}</div></div>
         <div className="kpi kpi-v"><div className="kpi-l">Ganancia Potencial</div><div className="kpi-val" style={{ color: "var(--gn)" }}>{money(totalVal - totalCost)}</div></div>
@@ -388,6 +390,9 @@ function InventoryPage({ articles, purchases, priceHistory, refresh, notify }) {
           <select className="fs" style={{ width: "auto" }} value={catF} onChange={e => setCatF(e.target.value)}><option value="">Todas</option>{CATEGORIES.map(c => <option key={c}>{c}</option>)}</select>
           <select className="fs" style={{ width: "auto" }} value={sort} onChange={e => setSort(e.target.value)}>
             <option value="name">Nombre</option><option value="stock-low">Stock ↑</option><option value="stock-high">Stock ↓</option><option value="price">Precio ↓</option>
+          </select>
+          <select className="fs" style={{ width: "auto" }} value={activeFilter} onChange={e => setActiveFilter(e.target.value)}>
+            <option value="active">Solo activos</option><option value="inactive">Solo inactivos</option><option value="all">Todos</option>
           </select>
         </div>
         <button className="btn btn-p" onClick={() => setModal({ ...blank })}>{I.plus} Nuevo Artículo</button>
@@ -403,7 +408,7 @@ function InventoryPage({ articles, purchases, priceHistory, refresh, notify }) {
                   const st = stockStatus(a);
                   return (
                     <tr key={a.id}>
-                      <td style={{ fontWeight: 600 }}>{a.name} {a.isCorte && <span style={{ display: "inline-flex", padding: "2px 6px", borderRadius: 10, fontSize: 9, fontWeight: 700, background: "#EDE9FE", color: "#7C3AED", marginLeft: 4, verticalAlign: "middle" }}>Corte</span>}</td>
+                      <td style={{ fontWeight: 600 }}>{a.name} {a.isCorte && <span style={{ display: "inline-flex", padding: "2px 6px", borderRadius: 10, fontSize: 9, fontWeight: 700, background: "#EDE9FE", color: "#7C3AED", marginLeft: 4, verticalAlign: "middle" }}>Corte</span>}{a.active === false && <span style={{ display: "inline-flex", padding: "2px 6px", borderRadius: 10, fontSize: 9, fontWeight: 700, background: "#FEE2E2", color: "#DC2626", marginLeft: 4, verticalAlign: "middle" }}>Inactivo</span>}</td>
                       <td><span className="badge b-ac">{a.category}</span></td>
                       <td>{a.purchasePrice ? money(a.purchasePrice) : <span style={{ color: "var(--tx3)", fontSize: 11 }}>Pendiente</span>}</td>
                       <td><span className="badge b-yw">{a.iva ?? 21}%</span></td>
@@ -443,7 +448,8 @@ function InventoryPage({ articles, purchases, priceHistory, refresh, notify }) {
 }
 
 function ArticleModal({ art, articles, purchases, priceHistory, onSave, onClose }) {
-  const [f, setF] = useState({ ...art, units: art.units || ["kg"], iva: art.iva ?? 21 });
+  const [f, setF] = useState({ ...art, units: art.units || ["kg"], iva: art.iva ?? 21, active: art.active !== false });
+  const [confirmInactive, setConfirmInactive] = useState(false);
 
   const set = (k, v) => {
     const upd = { ...f, [k]: v };
@@ -557,6 +563,22 @@ function ArticleModal({ art, articles, purchases, priceHistory, onSave, onClose 
             ¿Es artículo de corte?
             <span style={{ fontSize: 10, fontWeight: 400, color: "var(--tx3)" }}>Aparece en el cierre diario de merma</span>
           </label>
+          {f.id && (<>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", padding: "6px 0 4px", fontSize: 13, fontWeight: 500, color: f.active !== false ? "var(--gn)" : "var(--rd)" }}>
+              <input type="checkbox" checked={f.active !== false} onChange={e => { if (!e.target.checked) setConfirmInactive(true); else setF(p => ({ ...p, active: true })); }} style={{ accentColor: f.active !== false ? "var(--gn)" : "var(--rd)", width: 16, height: 16 }} />
+              Artículo activo
+              {f.active === false && <span style={{ padding: "1px 6px", borderRadius: 8, fontSize: 9, fontWeight: 700, background: "#FEE2E2", color: "#DC2626" }}>INACTIVO</span>}
+            </label>
+            {confirmInactive && (
+              <div style={{ background: "#FEF2F2", borderRadius: 10, padding: 12, margin: "4px 0 8px", border: "1px solid #FECACA" }}>
+                <p style={{ fontSize: 12, color: "#DC2626", margin: "0 0 10px", lineHeight: 1.5 }}>¿Confirmás que querés inactivar este artículo? No aparecerá en nuevas ventas, compras ni operaciones futuras, pero todos sus registros históricos se mantendrán intactos.</p>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button className="btn btn-s" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => setConfirmInactive(false)}>Cancelar</button>
+                  <button className="btn" style={{ fontSize: 12, padding: "4px 12px", background: "#DC2626", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }} onClick={() => { setF(p => ({ ...p, active: false })); setConfirmInactive(false); }}>Sí, inactivar</button>
+                </div>
+              </div>
+            )}
+          </>)}
         </div>
         <div className="md-f">
           <button className="btn btn-s" onClick={onClose}>Cancelar</button>
@@ -701,7 +723,7 @@ function PurchaseModal({ articles, purchases, priceHistory, editData, pendingDev
   const [devolucionId, setDevolucionId] = useState(editData?.devolucionId || "");
 
   const allArticles = useMemo(() => [...articles, ...newArticles], [articles, newArticles]);
-  const avail = q ? allArticles.filter(a => (a.name || "").toLowerCase().includes(q.toLowerCase()) && !items.find(i => i.articleId === a.id)) : [];
+  const avail = q ? allArticles.filter(a => a.active !== false && (a.name || "").toLowerCase().includes(q.toLowerCase()) && !items.find(i => i.articleId === a.id)) : [];
 
   const addExisting = (id, name, units, price, iva) => {
     const iv = iva ?? 21;
@@ -1111,11 +1133,11 @@ function SaleModal({ articles, payMethods, combos, editData, onSave, onClose, sh
   const [comboQ, setComboQ] = useState(""); const [comboDD, setComboDD] = useState(false);
   const [swapIdx, setSwapIdx] = useState(null); const [swapQ, setSwapQ] = useState("");
 
-  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id && !i.isComposite && !i.isComboItem)) : [];
-  const compAvail = compQ ? articles.filter(a => a.name && a.name.toLowerCase().includes(compQ.toLowerCase())).slice(0, 8) : [];
+  const avail = q ? articles.filter(a => a.active !== false && a.name && a.name.toLowerCase().includes(q.toLowerCase()) && a.salePrice > 0 && !items.find(i => i.articleId === a.id && !i.isComposite && !i.isComboItem)) : [];
+  const compAvail = compQ ? articles.filter(a => a.active !== false && a.name && a.name.toLowerCase().includes(compQ.toLowerCase())).slice(0, 8) : [];
   const activeComboList = (combos || []).filter(c => c.active !== false);
   const comboAvail = comboQ ? activeComboList.filter(c => c.name.toLowerCase().includes(comboQ.toLowerCase())).slice(0, 8) : activeComboList.slice(0, 8);
-  const swapAvail = articles.filter(a => a.name && (!swapQ || a.name.toLowerCase().includes(swapQ.toLowerCase()))).slice(0, 8);
+  const swapAvail = articles.filter(a => a.active !== false && a.name && (!swapQ || a.name.toLowerCase().includes(swapQ.toLowerCase()))).slice(0, 8);
 
   const addExisting = (id, name, units, salePrice, purchasePrice, stock) => {
     setItems(prev => [...prev, { articleId: id, articleName: name, unit: (units || ["kg"])[0], quantity: 1, unitPrice: salePrice, origPrice: salePrice, costPrice: purchasePrice, subtotal: salePrice, profit: salePrice - purchasePrice, stock }]);
@@ -1560,7 +1582,7 @@ function DevolucionesPage({ articles, purchases, devoluciones, onSave, onDelete,
 function MermaPage({ articles, mermas, refresh, notify }) {
   const [tab, setTab] = useState("corte");
   const [delConfirm, setDelConfirm] = useState(null);
-  const corteArts = articles.filter(a => a.isCorte);
+  const corteArts = articles.filter(a => a.active !== false && a.isCorte);
   const sorted = useMemo(() => [...mermas].sort((a, b) => new Date(b.date) - new Date(a.date)), [mermas]);
 
   const totalPerdida = mermas.reduce((s, m) => s + (m.lossValue || 0), 0);
@@ -1611,7 +1633,7 @@ function MermaPage({ articles, mermas, refresh, notify }) {
   const [vencSearch, setVencSearch] = useState("");
   const [vencDD, setVencDD] = useState(false);
 
-  const vencAvail = vencSearch ? articles.filter(a => (a.name || "").toLowerCase().includes(vencSearch.toLowerCase())).slice(0, 8) : [];
+  const vencAvail = vencSearch ? articles.filter(a => a.active !== false && (a.name || "").toLowerCase().includes(vencSearch.toLowerCase())).slice(0, 8) : [];
 
   const saveVenc = async () => {
     if (!vencArt || !vencQ || parseFloat(vencQ) <= 0) { notify("⚠ Seleccioná artículo y cantidad"); return; }
@@ -1844,7 +1866,7 @@ function ComboModal({ articles, combo, onSave, onClose }) {
   const [comboItems, setComboItems] = useState(combo.items || []);
   const [price, setPrice] = useState(combo.suggestedPrice || 0);
   const [q, setQ] = useState(""); const [dd, setDD] = useState(false);
-  const avail = q ? articles.filter(a => a.name && a.name.toLowerCase().includes(q.toLowerCase()) && !comboItems.find(ci => ci.articleId === a.id)).slice(0, 8) : [];
+  const avail = q ? articles.filter(a => a.active !== false && a.name && a.name.toLowerCase().includes(q.toLowerCase()) && !comboItems.find(ci => ci.articleId === a.id)).slice(0, 8) : [];
 
   const addArt = (a) => {
     setComboItems(prev => [...prev, { articleId: a.id, name: a.name, unit: (a.units || ["kg"])[0], qty: 0.25 }]);
@@ -2036,7 +2058,7 @@ function ExpensesPage({ expenses, refresh, notify }) {
   const topCats = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
   const maxCat = topCats[0]?.[1] || 1;
 
-  const blank = { description: "", category: "Otros", type: "fijo", frequency: "mensual", amount: 0 };
+  const blank = { description: "", category: "Otros", type: "fijo", frequency: "mensual", amount: 0, date: new Date().toISOString().split("T")[0] };
 
   const handleSave = async (exp) => {
     try {
@@ -2117,7 +2139,10 @@ function ExpenseModal({ exp, onSave, onClose }) {
       <div className="md" onClick={e => e.stopPropagation()}>
         <div className="md-h"><h2>{f.id ? "Editar" : "Nuevo"} Gasto</h2><button className="btn-i" onClick={onClose}>{I.x}</button></div>
         <div className="md-b">
-          <div className="fg"><label className="fl">Descripción</label><input className="fi" value={f.description} onChange={e => set("description", e.target.value)} placeholder="Ej: Alquiler local Enero 2026" /></div>
+          <div className="fr">
+            <div className="fg" style={{ flex: 2 }}><label className="fl">Descripción</label><input className="fi" value={f.description} onChange={e => set("description", e.target.value)} placeholder="Ej: Alquiler local Enero 2026" /></div>
+            <div className="fg"><label className="fl">Fecha</label><input className="fi" type="date" value={f.date ? (typeof f.date === "string" && f.date.includes("T") ? f.date.split("T")[0] : f.date) : new Date().toISOString().split("T")[0]} onChange={e => set("date", e.target.value)} /></div>
+          </div>
           <div className="fr">
             <div className="fg">
               <label className="fl">Categoría</label>
@@ -2191,84 +2216,157 @@ function exportToExcel(sheets, filename) {
 }
 
 // ============ AI ADVISOR ============
-function AIAdvisorPage({ articles, sales, purchases, expenses }) {
+function AIAdvisorPage({ articles, sales, purchases, expenses, mermas, devoluciones }) {
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState(null);
   const [mode, setMode] = useState("general");
+  const [chatHistory, setChatHistory] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatEndRef = React.useRef(null);
+
+  React.useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatHistory]);
+
+  const buildContext = () => {
+    const now = new Date();
+    const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 7);
+    const monthAgo = new Date(now); monthAgo.setMonth(now.getMonth() - 1);
+    const monthSales = sales.filter(s => new Date(s.date) >= monthAgo);
+    const weekSales = sales.filter(s => new Date(s.date) >= weekAgo);
+    const prodMap = {};
+    monthSales.forEach(s => s.items.forEach(i => {
+      if (!prodMap[i.articleId]) prodMap[i.articleId] = { name: i.articleName, rev: 0, qty: 0, count: 0, profit: 0 };
+      prodMap[i.articleId].rev += i.subtotal; prodMap[i.articleId].qty += i.quantity;
+      prodMap[i.articleId].count++; prodMap[i.articleId].profit += (i.profit || 0);
+    }));
+    const topProducts = Object.values(prodMap).sort((a, b) => b.rev - a.rev).slice(0, 10);
+    const bottomProducts = Object.values(prodMap).sort((a, b) => a.rev - b.rev).slice(0, 5);
+    const totalRevMonth = monthSales.reduce((a, s) => a + s.total, 0);
+    const totalProfitMonth = monthSales.reduce((a, s) => a + s.profit, 0);
+    const totalRevWeek = weekSales.reduce((a, s) => a + s.total, 0);
+    const totalExpenses = expenses.reduce((a, e) => a + (e.amount || 0), 0);
+    const fixedExpenses = expenses.filter(e => e.type === "fijo").reduce((a, e) => a + (e.amount || 0), 0);
+    const lowStock = articles.filter(a => a.active !== false && a.stock > 0 && a.stock <= (a.minStock || 5));
+    const outStock = articles.filter(a => a.active !== false && a.stock <= 0 && a.purchasePrice > 0);
+    return `DATOS DEL NEGOCIO (fecha: ${fDate(now)}):
+VENTAS ÚLTIMO MES: ${money(totalRevMonth)} | Ganancia bruta: ${money(totalProfitMonth)} | Margen: ${totalRevMonth > 0 ? (totalProfitMonth/totalRevMonth*100).toFixed(1) : 0}% | ${monthSales.length} tickets
+VENTAS ÚLTIMA SEMANA: ${money(totalRevWeek)} | ${weekSales.length} tickets
+GASTOS: ${money(totalExpenses)} (Fijos: ${money(fixedExpenses)}) | Resultado neto: ${money(totalProfitMonth - totalExpenses)}
+TOP PRODUCTOS: ${topProducts.map((p,i) => `${i+1}. ${p.name}: ${money(p.rev)} (${p.qty} uds)`).join(", ") || "Sin datos"}
+PRODUCTOS LENTOS: ${bottomProducts.map(p => `${p.name}: ${money(p.rev)}`).join(", ") || "Sin datos"}
+STOCK CRÍTICO: ${[...outStock.map(a => `SIN STOCK: ${a.name}`), ...lowStock.map(a => `BAJO: ${a.name} (${a.stock})`)].join(", ") || "OK"}
+INVENTARIO: ${articles.filter(a => a.active !== false).length} artículos activos`;
+  };
+
+  const buildCierreContext = () => {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const prevMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevMonthEnd = new Date(now.getFullYear(), now.getMonth(), 0);
+    const monthNames = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+    const mesActual = monthNames[now.getMonth()];
+    const mesAnterior = monthNames[now.getMonth() === 0 ? 11 : now.getMonth() - 1];
+
+    const mSales = sales.filter(s => new Date(s.date) >= monthStart);
+    const pSales = sales.filter(s => { const d = new Date(s.date); return d >= prevMonthStart && d < monthStart; });
+    const mPurch = purchases.filter(p => new Date(p.date) >= monthStart);
+    const mExp = expenses.filter(e => new Date(e.date) >= monthStart);
+    const mMerma = (mermas||[]).filter(m => new Date(m.date) >= monthStart);
+    const mDevol = (devoluciones||[]).filter(d => new Date(d.date) >= monthStart);
+
+    const mRev = mSales.reduce((a,s) => a+s.total,0);
+    const mProfit = mSales.reduce((a,s) => a+s.profit,0);
+    const pRev = pSales.reduce((a,s) => a+s.total,0);
+    const pProfit = pSales.reduce((a,s) => a+s.profit,0);
+    const mExpTotal = mExp.reduce((a,e) => a+(e.amount||0),0);
+    const mMermaVal = mMerma.reduce((a,m) => a+(m.lossValue||0),0);
+    const mDevolVal = mDevol.reduce((a,d) => a+(d.totalValue||0),0);
+    const mPurchTotal = mPurch.reduce((a,p) => a+p.total,0);
+    const netResult = mProfit - mExpTotal - mMermaVal;
+
+    const expByCat = {};
+    mExp.forEach(e => { expByCat[e.category] = (expByCat[e.category]||0) + (e.amount||0); });
+
+    const prodMap = {};
+    mSales.forEach(s => s.items.forEach(i => {
+      if (!prodMap[i.articleId]) prodMap[i.articleId] = { name: i.articleName, rev: 0, qty: 0, profit: 0 };
+      prodMap[i.articleId].rev += i.subtotal; prodMap[i.articleId].qty += i.quantity; prodMap[i.articleId].profit += (i.profit||0);
+    }));
+    const top5 = Object.values(prodMap).sort((a,b) => b.rev - a.rev).slice(0,5);
+    const lowStock = articles.filter(a => a.active !== false && a.stock > 0 && a.stock <= (a.minStock||5));
+    const outStock = articles.filter(a => a.active !== false && a.stock <= 0 && a.purchasePrice > 0);
+
+    return `CIERRE DE MES — ${mesActual.toUpperCase()} ${now.getFullYear()}:
+
+VENTAS DEL MES: ${money(mRev)} | ${mSales.length} tickets | Ganancia bruta: ${money(mProfit)} | Margen: ${mRev>0?(mProfit/mRev*100).toFixed(1):0}%
+COMPRAS DEL MES: ${money(mPurchTotal)} | ${mPurch.length} facturas
+GASTOS DEL MES: ${money(mExpTotal)} total
+${Object.entries(expByCat).map(([cat,v]) => `  - ${cat}: ${money(v)}`).join("\n") || "  Sin gastos registrados"}
+MERMA DEL MES: ${money(mMermaVal)} valorizada | ${mMerma.length} registros
+DEVOLUCIONES A PROVEEDOR: ${money(mDevolVal)} | ${mDevol.length} devoluciones
+GANANCIA BRUTA: ${money(mProfit)}
+GANANCIA NETA: ${money(netResult)} (bruta - gastos - merma)
+TOP 5 PRODUCTOS DEL MES:
+${top5.map((p,i) => `${i+1}. ${p.name}: ${money(p.rev)} (${p.qty} uds, ganancia: ${money(p.profit)})`).join("\n") || "Sin datos"}
+MES ANTERIOR (${mesAnterior}): Ventas: ${money(pRev)} | Ganancia: ${money(pProfit)} | Tickets: ${pSales.length}
+VARIACIÓN VS MES ANTERIOR: Ventas ${pRev>0?((mRev-pRev)/pRev*100).toFixed(1):"N/A"}% | Ganancia ${pProfit>0?((mProfit-pProfit)/pProfit*100).toFixed(1):"N/A"}%
+ALERTAS DE STOCK AL CIERRE:
+${[...outStock.map(a=>`  SIN STOCK: ${a.name}`), ...lowStock.map(a=>`  STOCK BAJO: ${a.name} (${a.stock} ${(a.units||[])[0]||"uds"}, mín: ${a.minStock||5})`)].join("\n") || "  Sin alertas críticas"}`;
+  };
 
   const analyze = async () => {
-    setLoading(true);
-    setResponse(null);
+    setLoading(true); setResponse(null);
     try {
-      const now = new Date();
-      const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 7);
-      const monthAgo = new Date(now); monthAgo.setMonth(now.getMonth() - 1);
-
-      const weekSales = sales.filter(s => new Date(s.date) >= weekAgo);
-      const monthSales = sales.filter(s => new Date(s.date) >= monthAgo);
-      const weekPurch = purchases.filter(p => new Date(p.date) >= weekAgo);
-
-      const prodMap = {};
-      monthSales.forEach(s => s.items.forEach(i => {
-        if (!prodMap[i.articleId]) prodMap[i.articleId] = { name: i.articleName, rev: 0, qty: 0, count: 0, profit: 0 };
-        prodMap[i.articleId].rev += i.subtotal; prodMap[i.articleId].qty += i.quantity;
-        prodMap[i.articleId].count++; prodMap[i.articleId].profit += (i.profit || 0);
-      }));
-      const topProducts = Object.values(prodMap).sort((a, b) => b.rev - a.rev).slice(0, 15);
-      const bottomProducts = Object.values(prodMap).sort((a, b) => a.rev - b.rev).slice(0, 10);
-
-      const totalRevMonth = monthSales.reduce((a, s) => a + s.total, 0);
-      const totalProfitMonth = monthSales.reduce((a, s) => a + s.profit, 0);
-      const totalRevWeek = weekSales.reduce((a, s) => a + s.total, 0);
-      const totalExpenses = expenses.reduce((a, e) => a + (e.amount || 0), 0);
-      const fixedExpenses = expenses.filter(e => e.type === "fijo").reduce((a, e) => a + (e.amount || 0), 0);
-
-      const lowStock = articles.filter(a => a.stock > 0 && a.stock <= (a.minStock || 5));
-      const outStock = articles.filter(a => a.stock <= 0 && a.purchasePrice > 0);
-
       const prompts = {
         general: `Sos el asesor de negocios de una fiambrería argentina. Analizá los datos y dame un informe ejecutivo completo con recomendaciones accionables.`,
         promos: `Sos el asesor comercial de una fiambrería argentina. Basándote en los datos, recomendá promociones específicas para esta semana. Incluí combos, descuentos por volumen, y estrategias para mover productos lentos.`,
         compras: `Sos el asesor de compras de una fiambrería argentina. Analizá las ventas y stock para recomendar qué comprar esta semana, en qué cantidad, y qué no vale la pena reponer.`,
         costos: `Sos el asesor financiero de una fiambrería argentina. Analizá la estructura de gastos y costos, identificá oportunidades de ahorro, y sugerí cómo mejorar los márgenes.`,
+        cierre: `Sos el contador y asesor financiero de una fiambrería argentina. Con los datos del cierre mensual, generá un informe financiero mensual completo: resultado del período, análisis de márgenes, comparativa con el mes anterior, top productos, y recomendaciones concretas para el próximo mes.`,
       };
-
-      const dataContext = `
-DATOS DEL NEGOCIO (fecha: ${fDate(now)}):
-
-VENTAS ÚLTIMO MES: ${money(totalRevMonth)} | Ganancia bruta: ${money(totalProfitMonth)} | Margen: ${totalRevMonth > 0 ? (totalProfitMonth/totalRevMonth*100).toFixed(1) : 0}%
-VENTAS ÚLTIMA SEMANA: ${money(totalRevWeek)} | ${weekSales.length} tickets
-GASTOS OPERATIVOS TOTAL: ${money(totalExpenses)} | Fijos: ${money(fixedExpenses)}
-RESULTADO NETO: ${money(totalProfitMonth - totalExpenses)}
-
-DETALLE GASTOS:
-${expenses.map(e => `- ${e.description} (${e.category}, ${e.type}): ${money(e.amount)}`).join("\n") || "Sin gastos registrados"}
-
-TOP PRODUCTOS (por venta del mes):
-${topProducts.map((p, i) => `${i+1}. ${p.name}: ${money(p.rev)} (${p.qty} uds, ${p.count} ventas, ganancia: ${money(p.profit)})`).join("\n") || "Sin datos"}
-
-PRODUCTOS MENOS VENDIDOS:
-${bottomProducts.map((p, i) => `${i+1}. ${p.name}: ${money(p.rev)} (${p.qty} uds, ${p.count} ventas)`).join("\n") || "Sin datos"}
-
-STOCK BAJO/SIN STOCK:
-${[...outStock.map(a => `⚠ SIN STOCK: ${a.name}`), ...lowStock.map(a => `⚡ BAJO: ${a.name} (${a.stock} ${(a.units||[])[0] || "uds"}, mín: ${a.minStock || 5})`)].join("\n") || "Stock OK"}
-
-INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce((s,a) => s + a.stock * (a.salePrice||0), 0))}
-`;
-
+      const dataContext = mode === "cierre" ? buildCierreContext() : buildContext();
       const resp = await fetch("/api/ai-advisor", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: prompts[mode], dataContext }),
       });
       const data = await resp.json();
-      setResponse(data.text || data.error || "Error");
+      const text = data.text || data.error || "Error";
+      setResponse(text);
+      const modeLabels = { general: "Informe General", promos: "Promociones", compras: "Qué Comprar", costos: "Optimizar Costos", cierre: "Cierre de Mes" };
+      setChatHistory(prev => [...prev, { role: "assistant", text: `[${modeLabels[mode]}]\n${text}` }]);
     } catch (err) {
-      console.error(err);
-      setResponse("Error al conectar con el asesor IA. Intentá de nuevo en unos segundos.");
+      setResponse("Error al conectar con el asesor IA. Intentá de nuevo.");
     }
     setLoading(false);
   };
+
+  const sendChat = async () => {
+    const msg = chatInput.trim();
+    if (!msg || chatLoading) return;
+    setChatInput("");
+    setChatHistory(prev => [...prev, { role: "user", text: msg }]);
+    setChatLoading(true);
+    try {
+      const ctx = buildContext();
+      const systemPrompt = `Sos el asesor de negocios de una fiambrería argentina. Respondé en español argentino, directo y práctico. Basá tus respuestas en los datos reales del negocio que se incluyen en el contexto. Sin markdown excesivo.\n\nCONTEXTO DEL NEGOCIO:\n${ctx}`;
+      const apiMessages = [...chatHistory, { role: "user", text: msg }].map(m => ({
+        role: m.role === "user" ? "user" : "assistant",
+        content: m.text,
+      }));
+      const resp = await fetch("/api/ai-advisor", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: apiMessages, system: systemPrompt }),
+      });
+      const data = await resp.json();
+      const text = data.text || data.error || "Error";
+      setChatHistory(prev => [...prev, { role: "assistant", text }]);
+    } catch {
+      setChatHistory(prev => [...prev, { role: "assistant", text: "Error al conectar con el asesor IA." }]);
+    }
+    setChatLoading(false);
+  };
+
+  const modeLabels = { general: "Informe General", promos: "Promociones Recomendadas", compras: "Recomendaciones de Compra", costos: "Optimización de Costos", cierre: "Cierre de Mes" };
 
   return (
     <div>
@@ -2276,18 +2374,12 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
         <h3>Asesor Inteligente</h3>
         <p>Claude analiza tus ventas, compras, stock y gastos para darte recomendaciones personalizadas sobre tu fiambrería.</p>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
-          {[["general", "Informe General"], ["promos", "Promociones"], ["compras", "Qué Comprar"], ["costos", "Optimizar Costos"]].map(([id, label]) => (
-            <button key={id} className={`btn btn-sm ${mode === id ? "btn-p" : "btn-s"}`} style={mode !== id ? { background: "rgba(255,255,255,.1)", color: "rgba(255,255,255,.7)", border: "1px solid rgba(255,255,255,.15)" } : {}} onClick={() => setMode(id)}>
-              {label}
-            </button>
+          {[["general","Informe General"],["promos","Promociones"],["compras","Qué Comprar"],["costos","Optimizar Costos"],["cierre","Cierre de Mes"]].map(([id,label]) => (
+            <button key={id} className={`btn btn-sm ${mode === id ? "btn-p" : "btn-s"}`} style={mode !== id ? { background: "rgba(255,255,255,.1)", color: "rgba(255,255,255,.7)", border: "1px solid rgba(255,255,255,.15)" } : {}} onClick={() => setMode(id)}>{label}</button>
           ))}
         </div>
         <button className="ai-btn" onClick={analyze} disabled={loading}>
-          {loading ? (
-            <><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 12a9 9 0 11-6.219-8.56"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur=".8s" repeatCount="indefinite"/></path></svg> Analizando...</>
-          ) : (
-            <>{I.brain} Analizar mi negocio</>
-          )}
+          {loading ? (<><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M21 12a9 9 0 11-6.219-8.56"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur=".8s" repeatCount="indefinite"/></path></svg> Analizando...</>) : (<>{I.brain} Analizar mi negocio</>)}
         </button>
       </div>
 
@@ -2301,22 +2393,52 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
 
       {response && !loading && (
         <div className="card">
-          <div className="card-h">
-            <h3>{mode === "general" ? "Informe General" : mode === "promos" ? "Promociones Recomendadas" : mode === "compras" ? "Recomendaciones de Compra" : "Optimización de Costos"}</h3>
-            <span style={{ fontSize: 11, color: "var(--tx3)" }}>{fDateTime(new Date())}</span>
-          </div>
-          <div className="card-b">
-            <div className="ai-resp">{response}</div>
-          </div>
+          <div className="card-h"><h3>{modeLabels[mode]}</h3><span style={{ fontSize: 11, color: "var(--tx3)" }}>{fDateTime(new Date())}</span></div>
+          <div className="card-b"><div className="ai-resp">{response}</div></div>
         </div>
       )}
 
-      {!response && !loading && (
+      {!response && !loading && chatHistory.length === 0 && (
         <div className="card"><div className="card-b"><div className="empty">
           <div style={{ fontSize: 28, marginBottom: 8 }}>{I.brain}</div>
-          <p>Seleccioná un tipo de análisis y hacé clic en "Analizar mi negocio" para recibir recomendaciones personalizadas basadas en tus datos reales.</p>
+          <p>Seleccioná un análisis y hacé clic en "Analizar mi negocio", o escribí tu consulta directamente en el chat de abajo.</p>
         </div></div></div>
       )}
+
+      {/* CHAT */}
+      <div className="card" style={{ marginTop: 18 }}>
+        <div className="card-h">
+          <h3>Chat con el Asesor</h3>
+          {chatHistory.length > 0 && <button className="btn btn-s" style={{ fontSize: 11, padding: "3px 10px" }} onClick={() => setChatHistory([])}>Limpiar</button>}
+        </div>
+        <div className="card-b" style={{ padding: 0 }}>
+          {chatHistory.length > 0 && (
+            <div style={{ maxHeight: 420, overflowY: "auto", padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12 }}>
+              {chatHistory.map((m, i) => (
+                <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: m.role === "user" ? "flex-end" : "flex-start" }}>
+                  <div style={{ maxWidth: "82%", padding: "9px 13px", borderRadius: m.role === "user" ? "12px 12px 2px 12px" : "12px 12px 12px 2px", background: m.role === "user" ? "var(--ac)" : "var(--bg3)", color: m.role === "user" ? "#fff" : "var(--tx1)", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                    {m.text}
+                  </div>
+                  <span style={{ fontSize: 10, color: "var(--tx3)", marginTop: 2, paddingInline: 4 }}>{m.role === "user" ? "Vos" : "Asesor IA"}</span>
+                </div>
+              ))}
+              {chatLoading && (
+                <div style={{ display: "flex", alignItems: "flex-start" }}>
+                  <div style={{ padding: "9px 13px", borderRadius: "12px 12px 12px 2px", background: "var(--bg3)", fontSize: 13, color: "var(--tx3)" }}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ marginRight: 4 }}><path d="M21 12a9 9 0 11-6.219-8.56"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur=".8s" repeatCount="indefinite"/></path></svg>
+                    Pensando...
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+          )}
+          <div style={{ display: "flex", gap: 8, padding: "12px 16px", borderTop: chatHistory.length > 0 ? "1px solid var(--br)" : "none" }}>
+            <input className="fi" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === "Enter" && !e.shiftKey && sendChat()} placeholder="Consultá algo sobre tu negocio..." style={{ flex: 1 }} disabled={chatLoading} />
+            <button className="btn btn-p" onClick={sendChat} disabled={!chatInput.trim() || chatLoading} style={{ whiteSpace: "nowrap" }}>Enviar</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2325,10 +2447,17 @@ INVENTARIO: ${articles.length} artículos | Valor venta: ${money(articles.reduce
 function ReportsPage({ articles, sales, purchases, expenses, mermas, devoluciones, payMethods, priceHistory }) {
   const [tab, setTab] = useState("pnl");
   const [period, setPeriod] = useState("all");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
   const [priceArtId, setPriceArtId] = useState("");
   const [priceProv, setPriceProv] = useState("");
 
   const filterP = (arr) => {
+    if (customFrom && customTo) {
+      const from = new Date(customFrom); from.setHours(0, 0, 0, 0);
+      const to = new Date(customTo); to.setHours(23, 59, 59, 999);
+      return arr.filter(i => { const d = new Date(i.date); return d >= from && d <= to; });
+    }
     if (period === "all") return arr;
     const now = new Date(), start = new Date();
     if (period === "today") start.setHours(0, 0, 0, 0);
@@ -2427,7 +2556,7 @@ function ReportsPage({ articles, sales, purchases, expenses, mermas, devolucione
   const outStock = articles.filter(a => a.stock <= 0 && a.purchasePrice > 0);
 
   const moneyNum = (n) => Math.round((n || 0) * 100) / 100;
-  const periodLabel = period === "all" ? "Todo" : period === "today" ? "Hoy" : period === "week" ? "Semana" : "Mes";
+  const periodLabel = (customFrom && customTo) ? `${customFrom} al ${customTo}` : period === "all" ? "Todo" : period === "today" ? "Hoy" : period === "week" ? "Semana" : "Mes";
 
   const downloadExcel = () => {
     const sheets = [];
@@ -2535,10 +2664,22 @@ function ReportsPage({ articles, sales, purchases, expenses, mermas, devolucione
             <div key={id} className={`tab ${tab === id ? "on" : ""}`} onClick={() => setTab(id)}>{l}</div>
           ))}
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select className="fs" style={{ width: "auto" }} value={period} onChange={e => setPeriod(e.target.value)}>
-            <option value="all">Todo</option><option value="today">Hoy</option><option value="week">Semana</option><option value="month">Mes</option>
-          </select>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          {[["all","Todo"],["today","Hoy"],["week","Semana"],["month","Mes"]].map(([v,l]) => (
+            <button key={v} onClick={() => { setPeriod(v); setCustomFrom(""); setCustomTo(""); }}
+              style={{ padding: "5px 11px", borderRadius: 6, border: "1px solid var(--br)", cursor: "pointer", fontSize: 12, fontWeight: 500, background: (period === v && !customFrom && !customTo) ? "var(--ac)" : "var(--bg2)", color: (period === v && !customFrom && !customTo) ? "#fff" : "var(--tx2)", transition: "all .15s" }}>{l}</button>
+          ))}
+          <div style={{ display: "flex", alignItems: "center", gap: 4, borderLeft: "1px solid var(--br)", paddingLeft: 8 }}>
+            <input type="date" value={customFrom} onChange={e => { setCustomFrom(e.target.value); setPeriod("all"); }}
+              style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${customFrom && customTo ? "var(--ac)" : "var(--br)"}`, fontSize: 12, background: "var(--bg2)", color: "var(--tx1)", outline: "none" }} />
+            <span style={{ fontSize: 11, color: "var(--tx3)" }}>—</span>
+            <input type="date" value={customTo} onChange={e => { setCustomTo(e.target.value); setPeriod("all"); }}
+              style={{ padding: "4px 7px", borderRadius: 6, border: `1px solid ${customFrom && customTo ? "var(--ac)" : "var(--br)"}`, fontSize: 12, background: "var(--bg2)", color: "var(--tx1)", outline: "none" }} />
+            {(customFrom || customTo) && (
+              <button onClick={() => { setCustomFrom(""); setCustomTo(""); }} title="Limpiar rango"
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--tx3)", padding: "0 2px", fontSize: 14, lineHeight: 1 }}>×</button>
+            )}
+          </div>
           <button className="exp-dl-btn" onClick={downloadExcel}>{I.download} Excel</button>
         </div>
       </div>
@@ -2834,7 +2975,7 @@ function ReportsPage({ articles, sales, purchases, expenses, mermas, devolucione
         const allHistory = priceArtId ? getPriceHistory(priceArtId, purchases, priceHistory) : [];
         const filteredH = allHistory.filter(h =>
           (!priceProv || h.supplier === priceProv) &&
-          (period === "all" || (() => { const now = new Date(), start = new Date(); if (period === "today") start.setHours(0,0,0,0); else if (period === "week") start.setDate(now.getDate()-7); else if (period === "month") start.setMonth(now.getMonth()-1); return new Date(h.date) >= start; })())
+          ((customFrom && customTo) ? (() => { const from = new Date(customFrom); from.setHours(0,0,0,0); const to = new Date(customTo); to.setHours(23,59,59,999); const d = new Date(h.date); return d >= from && d <= to; })() : (period === "all" || (() => { const now = new Date(), start = new Date(); if (period === "today") start.setHours(0,0,0,0); else if (period === "week") start.setDate(now.getDate()-7); else if (period === "month") start.setMonth(now.getMonth()-1); return new Date(h.date) >= start; })()))
         );
         const prices = filteredH.map(h => h.price);
         const minP = prices.length > 0 ? Math.min(...prices) : 0;
@@ -2848,7 +2989,7 @@ function ReportsPage({ articles, sales, purchases, expenses, mermas, devolucione
             <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
               <select className="fs" style={{ width: "auto", minWidth: 200 }} value={priceArtId} onChange={e => setPriceArtId(e.target.value)}>
                 <option value="">Seleccioná un artículo...</option>
-                {articles.filter(a => a.purchasePrice > 0).sort((a,b) => a.name.localeCompare(b.name)).map(a => (
+                {articles.filter(a => a.active !== false && a.purchasePrice > 0).sort((a,b) => a.name.localeCompare(b.name)).map(a => (
                   <option key={a.id} value={a.id}>{a.name}</option>
                 ))}
               </select>
