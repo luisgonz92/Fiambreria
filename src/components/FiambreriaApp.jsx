@@ -40,7 +40,7 @@ const getPriceHistory = (articleId, purchases, phTable) => {
 // ============ SUPABASE DB LAYER ============
 const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: r.iva != null ? Number(r.iva) : 21, isCorte: !!r.is_corte, category: (r.categories && r.categories.name) || r.category_name||r.category||'Otros', active: r.active !== false });
 const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
-const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit), isComboItem: !!i.combo_id, comboGroupId: i.combo_id||null })) });
+const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit), isComboPrice: !!i.is_combo_header, isComboItem: !!i.combo_id && !i.is_combo_header, comboGroupId: i.combo_id||null })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
 const mapMerma = (r) => ({ ...r, lossValue: Number(r.loss_value)||0, items: r.items||[] });
 const mapDevol = (r) => ({ ...r, purchaseId: r.purchase_id, invoiceNum: r.invoice_num, totalValue: Number(r.total_value)||0, items: r.items||[] });
@@ -68,8 +68,8 @@ const db = {
   async deletePurchase(id) { await supabase.from('purchase_invoices').delete().eq('id', id); },
   // Sales
   async getSales() { const { data } = await supabase.from('sale_tickets').select('*, sale_ticket_items(*)').order('date', { ascending: false }); return (data||[]).map(mapSale); },
-  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: t.id, article_id: i.isComposite ? null : (i.articleId||null), article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
-  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); const dbItems = items.filter(i => !i.isComboPrice).map(i => ({ sale_ticket_id: id, article_id: i.isComposite ? null : (i.articleId||null), article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
+  async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; const dbItems = items.map(i => ({ sale_ticket_id: t.id, article_id: i.isComposite ? null : (i.isComboPrice ? null : (i.articleId||null)), article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null, is_combo_header: !!i.isComboPrice })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
+  async updateSale(id, s, items) { await supabase.from('sale_ticket_items').delete().eq('sale_ticket_id', id); await supabase.from('sale_tickets').update({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).eq('id', id); const dbItems = items.map(i => ({ sale_ticket_id: id, article_id: i.isComposite ? null : (i.isComboPrice ? null : (i.articleId||null)), article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null, is_combo_header: !!i.isComboPrice })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
   async deleteSale(id) { await supabase.from('sale_tickets').delete().eq('id', id); },
   // Expenses
   async getExpenses() { const { data } = await supabase.from('expenses').select('*').eq('active', true).order('date', { ascending: false }); return (data||[]).map(mapExp); },
@@ -1098,9 +1098,28 @@ function SalesPage({ articles, sales, refresh, payMethods, combos, notify }) {
                 <span>Pago: <strong><span className="pm-badge">{pmName(view.payMethod)}</span></strong></span>
               </div>
               <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Unidad</th><th>P. Venta</th><th>Subtotal</th><th>Ganancia</th></tr></thead>
-                <tbody>{view.items.map((it, i) => (
-                  <tr key={i}><td style={{ fontWeight: 500 }}>{it.articleName}</td><td>{it.quantity}</td><td>{unitLabel(it.unit)}</td><td>{money(it.unitPrice)}</td><td style={{ fontWeight: 600 }}>{money(it.subtotal)}</td><td><span className="badge b-gn">{showProfit ? money(it.profit) : "$ ••••••"}</span></td></tr>
-                ))}</tbody></table>
+                <tbody>{view.items.map((it, i) => {
+                  if (it.isComboItem) return (
+                    <tr key={i} style={{ background: "var(--bg3)", opacity: 0.85 }}>
+                      <td style={{ paddingLeft: 20, fontSize: 12, color: "var(--tx3)" }}>└ {it.articleName}</td>
+                      <td style={{ fontSize: 12, color: "var(--tx3)" }}>{it.quantity}</td>
+                      <td style={{ fontSize: 12, color: "var(--tx3)" }}>{unitLabel(it.unit)}</td>
+                      <td style={{ fontSize: 12, color: "var(--tx3)" }}>—</td>
+                      <td style={{ fontSize: 12, color: "var(--tx3)" }}>—</td>
+                      <td>—</td>
+                    </tr>
+                  );
+                  return (
+                    <tr key={i}>
+                      <td style={{ fontWeight: 500 }}>{it.articleName}{it.isComboPrice && <span className="comp-badge" style={{ background: "var(--ac)", color: "#fff", marginLeft: 6 }}>Combo</span>}</td>
+                      <td>{it.quantity}</td>
+                      <td>{unitLabel(it.unit)}</td>
+                      <td>{money(it.unitPrice)}</td>
+                      <td style={{ fontWeight: 600 }}>{money(it.subtotal)}</td>
+                      <td><span className="badge b-gn">{showProfit ? money(it.profit) : "$ ••••••"}</span></td>
+                    </tr>
+                  );
+                })}</tbody></table>
               <div className="tt" style={{ marginTop: 14 }}>
                 <div><span className="tt-l">Total</span><div style={{ fontSize: 12, color: "var(--gn)", marginTop: 2 }}>Ganancia: {showProfit ? money(view.profit) : "$ ••••••"}</div></div>
                 <span className="tt-v">{money(view.total)}</span>
