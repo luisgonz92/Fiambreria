@@ -39,7 +39,7 @@ const getPriceHistory = (articleId, purchases, phTable) => {
 
 // ============ SUPABASE DB LAYER ============
 const mapArt = (r) => ({ ...r, purchasePrice: Number(r.purchase_price)||0, salePrice: Number(r.sale_price)||0, marginPercent: Number(r.margin_percent)||30, minStock: Number(r.min_stock)||5, stock: Number(r.stock)||0, iva: r.iva != null ? Number(r.iva) : 21, isCorte: !!r.is_corte, category: (r.categories && r.categories.name) || r.category_name||r.category||'Otros', active: r.active !== false });
-const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
+const mapPurch = (r) => ({ ...r, supplier: r.supplier_name, invoiceNum: r.invoice_number, status: r.status || 'pendiente', paidAt: r.paid_at || null, items: (r.purchase_invoice_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitCost: Number(i.unit_cost), subtotal: Number(i.subtotal) })) });
 const mapSale = (r) => ({ ...r, client: r.client_name, payMethod: r.pay_method_name||'Efectivo', payMethod2: r.pay_method2_name||null, pm1Amount: r.pm1_amount ? Number(r.pm1_amount) : null, pm2Amount: r.pm2_amount ? Number(r.pm2_amount) : null, cashReceived: r.cash_received ? Number(r.cash_received) : null, discountMode: r.discount_mode||'none', discountAmount: Number(r.discount_amount)||0, discountPct: Number(r.discount_pct)||0, items: (r.sale_ticket_items||[]).map(i => ({ articleId: i.article_id, articleName: i.article_name, quantity: Number(i.quantity), unit: i.unit, unitPrice: Number(i.unit_price), costPrice: Number(i.cost_price), subtotal: Number(i.subtotal), profit: Number(i.profit), isComboPrice: !!i.is_combo_header, isComboItem: !!i.combo_id && !i.is_combo_header, comboGroupId: i.combo_id||null })) });
 const mapExp = (r) => ({ ...r, amount: Number(r.amount)||0 });
 const mapMerma = (r) => ({ ...r, lossValue: Number(r.loss_value)||0, items: r.items||[] });
@@ -63,9 +63,10 @@ const db = {
   async deleteArticle(id) { await supabase.from('articles').update({ active: false }).eq('id', id); },
   // Purchases
   async getPurchases() { const { data } = await supabase.from('purchase_invoices').select('*, purchase_invoice_items(*)').order('date', { ascending: false }); return (data||[]).map(mapPurch); },
-  async insertPurchase(p, items) { const { data: inv, error } = await supabase.from('purchase_invoices').insert({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total }).select().single(); if (error) throw error; await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: inv.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal }))); },
+  async insertPurchase(p, items) { const { data: inv, error } = await supabase.from('purchase_invoices').insert({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total, status: 'pendiente', paid_at: null }).select().single(); if (error) throw error; await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: inv.id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal }))); },
   async updatePurchase(id, p, items) { await supabase.from('purchase_invoice_items').delete().eq('purchase_invoice_id', id); await supabase.from('purchase_invoices').update({ supplier_name: p.supplier, invoice_number: p.invoiceNum, total: p.total }).eq('id', id); await supabase.from('purchase_invoice_items').insert(items.map(i => ({ purchase_invoice_id: id, article_id: i.articleId, article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_cost: i.unitCost, subtotal: i.subtotal }))); },
   async deletePurchase(id) { await supabase.from('purchase_invoices').delete().eq('id', id); },
+  async updatePurchaseStatus(id, newStatus) { const update = newStatus === 'pagada' ? { status: 'pagada', paid_at: new Date().toISOString() } : { status: 'pendiente', paid_at: null }; await supabase.from('purchase_invoices').update(update).eq('id', id); },
   // Sales
   async getSales() { const { data } = await supabase.from('sale_tickets').select('*, sale_ticket_items(*)').order('date', { ascending: false }); return (data||[]).map(mapSale); },
   async insertSale(s, items) { const { data: t, error } = await supabase.from('sale_tickets').insert({ client_name: s.client||'Consumidor Final', pay_method_name: s.payMethod||'Efectivo', pay_method2_name: s.payMethod2||null, pm1_amount: s.pm1Amount||null, pm2_amount: s.pm2Amount||null, cash_received: s.cashReceived||null, discount_mode: s.discountMode||'none', discount_amount: s.discountAmount||0, discount_pct: s.discountPct||0, total: s.total, cost_total: s.total-s.profit, profit: s.profit }).select().single(); if (error) throw error; const dbItems = items.map(i => ({ sale_ticket_id: t.id, article_id: i.isComposite ? null : (i.isComboPrice ? null : (i.articleId||null)), article_name: i.articleName, quantity: i.quantity, unit: i.unit, unit_price: i.unitPrice, cost_price: i.costPrice, subtotal: i.subtotal, profit: i.profit, combo_id: i.comboGroupId||null, is_combo_header: !!i.isComboPrice })); if (dbItems.length) await supabase.from('sale_ticket_items').insert(dbItems); },
@@ -595,9 +596,12 @@ function ArticleModal({ art, articles, purchases, priceHistory, onSave, onClose 
 function PurchasesPage({ articles, purchases, priceHistory, refresh, devoluciones, notify }) {
   const [modal, setModal] = useState(false);
   const [editPurch, setEditPurch] = useState(null);
-  const [view, setView] = useState(null);
+  const [viewId, setViewId] = useState(null);
   const [delConfirm, setDelConfirm] = useState(null);
+  const [filter, setFilter] = useState('all');
   const sorted = useMemo(() => [...purchases].sort((a, b) => new Date(b.date) - new Date(a.date)), [purchases]);
+  const filtered = useMemo(() => filter === 'all' ? sorted : sorted.filter(p => p.status === filter), [sorted, filter]);
+  const view = useMemo(() => viewId ? purchases.find(p => p.id === viewId) || null : null, [viewId, purchases]);
 
   const handleSave = async (data) => {
     try {
@@ -642,29 +646,52 @@ function PurchasesPage({ articles, purchases, priceHistory, refresh, devolucione
     setEditPurch(p); setModal(true);
   };
 
+  const handleToggleStatus = async (p) => {
+    const newStatus = p.status === 'pagada' ? 'pendiente' : 'pagada';
+    await db.updatePurchaseStatus(p.id, newStatus);
+    await refresh();
+    notify(newStatus === 'pagada' ? "Factura marcada como pagada" : "Factura marcada como pendiente");
+  };
+
   const pendingDevols = (devoluciones || []).filter(d => d.status === "pendiente" || d.status === "credito");
+
+  const filterBtnStyle = (f) => ({
+    padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer", border: "1px solid",
+    background: filter === f ? (f === 'pendiente' ? "var(--rd)" : f === 'pagada' ? "#16a34a" : "var(--ac)") : "transparent",
+    color: filter === f ? "#fff" : "var(--tx2)",
+    borderColor: filter === f ? (f === 'pendiente' ? "var(--rd)" : f === 'pagada' ? "#16a34a" : "var(--ac)") : "var(--bd)",
+  });
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 18 }}>
-        <div />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 10 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button style={filterBtnStyle('all')} onClick={() => setFilter('all')}>Todas</button>
+          <button style={filterBtnStyle('pendiente')} onClick={() => setFilter('pendiente')}>Pendientes</button>
+          <button style={filterBtnStyle('pagada')} onClick={() => setFilter('pagada')}>Pagadas</button>
+        </div>
         <button className="btn btn-p" onClick={() => { setEditPurch(null); setModal(true); }}>{I.plus} Nueva Compra</button>
       </div>
       <div className="card"><div style={{ padding: 0 }}><div className="tw">
         <table>
-          <thead><tr><th>#</th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Total</th><th style={{ width: 110 }}></th></tr></thead>
+          <thead><tr><th>#</th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Artículos</th><th>Total</th><th>Estado</th><th style={{ width: 110 }}></th></tr></thead>
           <tbody>
-            {sorted.length === 0 ? <tr><td colSpan={7}><div className="empty"><p>No hay compras. Registrá tu primera factura.</p></div></td></tr> :
-              sorted.map((p, i) => (
+            {filtered.length === 0 ? <tr><td colSpan={8}><div className="empty"><p>No hay compras{filter !== 'all' ? ` ${filter === 'pendiente' ? 'pendientes' : 'pagadas'}` : ''}.</p></div></td></tr> :
+              filtered.map((p) => (
                 <tr key={p.id}>
-                  <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{sorted.length - i}</td>
+                  <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{sorted.length - sorted.indexOf(p)}</td>
                   <td style={{ fontSize: 12 }}>{fDateTime(p.date)}</td>
                   <td style={{ fontWeight: 500 }}>{p.supplier}</td>
                   <td>{p.invoiceNum || "—"}</td>
                   <td>{p.items.length}</td>
                   <td style={{ fontWeight: 600 }}>{money(p.total)}</td>
+                  <td>
+                    <button onClick={() => handleToggleStatus(p)} title="Cambiar estado" style={{ background: p.status === 'pagada' ? "#16a34a" : "var(--rd)", color: "#fff", border: "none", borderRadius: 12, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                      {p.status === 'pagada' ? "Pagada" : "Pendiente"}
+                    </button>
+                  </td>
                   <td><div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    <button className="btn-i" onClick={() => setView(p)}>{I.eye}</button>
+                    <button className="btn-i" onClick={() => setViewId(p.id)}>{I.eye}</button>
                     {isPrevMonth(p.date) ? <span className="lock-badge">{I.lock} Cerrado</span> : (<>
                       <button className="btn-i" onClick={() => openEdit(p)}>{I.edit}</button>
                       {delConfirm === p.id ? (
@@ -683,14 +710,20 @@ function PurchasesPage({ articles, purchases, priceHistory, refresh, devolucione
 
       {modal && <PurchaseModal articles={articles} purchases={purchases} priceHistory={priceHistory} editData={editPurch} pendingDevols={pendingDevols} onSave={handleSave} onClose={() => { setModal(false); setEditPurch(null); }} />}
       {view && (
-        <div className="mo" onClick={() => setView(null)}>
+        <div className="mo" onClick={() => setViewId(null)}>
           <div className="md" onClick={e => e.stopPropagation()}>
-            <div className="md-h"><h2>Detalle de Compra</h2><button className="btn-i" onClick={() => setView(null)}>{I.x}</button></div>
+            <div className="md-h"><h2>Detalle de Compra</h2><button className="btn-i" onClick={() => setViewId(null)}>{I.x}</button></div>
             <div className="md-b">
-              <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 13, color: "var(--tx2)", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 20, marginBottom: 14, fontSize: 13, color: "var(--tx2)", flexWrap: "wrap", alignItems: "center" }}>
                 <span>Fecha: <strong>{fDateTime(view.date)}</strong></span>
                 <span>Proveedor: <strong>{view.supplier}</strong></span>
                 <span>Factura: <strong>{view.invoiceNum || "—"}</strong></span>
+                <span style={{ background: view.status === 'pagada' ? "#16a34a" : "var(--rd)", color: "#fff", borderRadius: 12, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>
+                  {view.status === 'pagada' ? "Pagada" : "Pendiente"}
+                </span>
+                {view.status === 'pagada' && view.paidAt && (
+                  <span style={{ fontSize: 12 }}>Pagada el: <strong>{fDateTime(view.paidAt)}</strong></span>
+                )}
               </div>
               <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Unidad</th><th>Costo Unit.</th><th>Subtotal</th></tr></thead>
                 <tbody>{view.items.map((it, i) => (
