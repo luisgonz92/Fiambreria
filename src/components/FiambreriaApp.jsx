@@ -2604,6 +2604,16 @@ function ReportsPage({ articles, sales, purchases, expenses, mermas, devolucione
   const topBuy = Object.values(purchMap).sort((a, b) => b.total - a.total);
   const maxB = topBuy[0]?.total || 1;
 
+  // Purchase report aggregates
+  const purchTotal = pP.reduce((a, p) => a + p.total, 0);
+  const purchCount = pP.length;
+  const purchAvg = purchCount > 0 ? purchTotal / purchCount : 0;
+  const supplierMap = {};
+  pP.forEach(p => { supplierMap[p.supplier] = (supplierMap[p.supplier] || 0) + p.total; });
+  const bySupplier = Object.entries(supplierMap).map(([name, total]) => ({ name, total })).sort((a, b) => b.total - a.total);
+  const maxSupp = bySupplier[0]?.total || 1;
+  const pPSorted = [...pP].sort((a, b) => new Date(b.date) - new Date(a.date));
+
   const lowStock = articles.filter(a => a.stock > 0 && a.stock <= (a.minStock || 5)).sort((a, b) => a.stock - b.stock);
   const outStock = articles.filter(a => a.stock <= 0 && a.purchasePrice > 0);
 
@@ -2857,25 +2867,83 @@ function ReportsPage({ articles, sales, purchases, expenses, mermas, devolucione
       )}
 
       {tab === "purch-r" && (
-        <div className="card">
-          <div className="card-h"><h3>Artículos Más Comprados</h3></div>
-          <div className="card-b">
-            {topBuy.length === 0 ? <div className="empty"><p>Sin datos de compras</p></div> :
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--tx2)" }}>Por Monto</div>
-                  <div className="bar-c">{topBuy.slice(0, 10).map((p, i) => (
-                    <div className="bar-r" key={i}><div className="bar-l" title={p.name}>{p.name}</div><div className="bar-t"><div className="bar-f gn" style={{ width: Math.max(8, (p.total / maxB) * 100) + "%" }}></div></div><div className="bar-v">{money(p.total)}</div></div>
-                  ))}</div>
-                </div>
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--tx2)" }}>Detalle</div>
-                  <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Facturas</th><th>Monto</th></tr></thead>
-                    <tbody>{topBuy.slice(0, 10).map((p, i) => (
-                      <tr key={i}><td style={{ fontWeight: 500 }}>{p.name}</td><td>{p.qty}</td><td>{p.count}</td><td style={{ fontWeight: 600 }}>{money(p.total)}</td></tr>
-                    ))}</tbody></table>
-                </div>
-              </div>}
+        <div>
+          {/* Sección 1 — Resumen del período */}
+          <div className="kpi-g" style={{ marginBottom: 18 }}>
+            <div className="kpi kpi-r"><div className="kpi-l">Total Gastado</div><div className="kpi-val" style={{ color: "var(--rd)" }}>{money(purchTotal)}</div><div className="kpi-s">{purchCount} facturas</div></div>
+            <div className="kpi kpi-y"><div className="kpi-l">Cantidad de Facturas</div><div className="kpi-val">{purchCount}</div></div>
+            <div className="kpi kpi-o"><div className="kpi-l">Promedio por Factura</div><div className="kpi-val">{money(purchAvg)}</div></div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginBottom: 18 }}>
+            <div className="card">
+              <div className="card-h"><h3>Por Proveedor</h3></div>
+              <div className="card-b">
+                {bySupplier.length === 0 ? <div className="empty"><p>Sin datos</p></div> :
+                  <div className="bar-c">{bySupplier.map((s, i) => (
+                    <div className="bar-r" key={i}><div className="bar-l" title={s.name}>{s.name}</div><div className="bar-t"><div className="bar-f gn" style={{ width: Math.max(8, (s.total / maxSupp) * 100) + "%" }}></div></div><div className="bar-v">{money(s.total)}</div></div>
+                  ))}</div>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-h"><h3>Detalle por Proveedor</h3></div>
+              <div style={{ padding: 0 }}>
+                {bySupplier.length === 0 ? <div className="empty"><p>Sin datos</p></div> :
+                  <div className="tw"><table>
+                    <thead><tr><th>Proveedor</th><th>Total</th><th>%</th></tr></thead>
+                    <tbody>{bySupplier.map((s, i) => (
+                      <tr key={i}><td style={{ fontWeight: 500 }}>{s.name}</td><td style={{ fontWeight: 600 }}>{money(s.total)}</td><td style={{ color: "var(--tx2)", fontSize: 12 }}>{purchTotal > 0 ? (s.total / purchTotal * 100).toFixed(1) : 0}%</td></tr>
+                    ))}</tbody>
+                  </table></div>}
+              </div>
+            </div>
+          </div>
+
+          {/* Sección 2 — Listado de tickets del período */}
+          <div className="card" style={{ marginBottom: 18 }}>
+            <div className="card-h"><h3>Tickets del Período</h3></div>
+            <div style={{ padding: 0 }}>
+              {pPSorted.length === 0 ? <div className="empty"><p>Sin facturas en el período</p></div> :
+                <div className="tw"><table>
+                  <thead><tr><th>#</th><th>Fecha</th><th>Proveedor</th><th>Factura</th><th>Total</th><th>Estado</th></tr></thead>
+                  <tbody>
+                    {pPSorted.map((p, i) => (
+                      <tr key={p.id}>
+                        <td style={{ fontWeight: 600, color: "var(--tx3)" }}>#{pPSorted.length - i}</td>
+                        <td style={{ fontSize: 12 }}>{fDateTime(p.date)}</td>
+                        <td style={{ fontWeight: 500 }}>{p.supplier}</td>
+                        <td>{p.invoiceNum || "—"}</td>
+                        <td style={{ fontWeight: 600 }}>{money(p.total)}</td>
+                        <td><span style={{ background: p.status === 'pagada' ? "#16a34a" : "var(--rd)", color: "#fff", borderRadius: 12, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{p.status === 'pagada' ? "Pagada" : "Pendiente"}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="tt" style={{ margin: "0 0 0 0" }}><span className="tt-l">Total período</span><span className="tt-v">{money(purchTotal)}</span></div>
+                </div>}
+            </div>
+          </div>
+
+          {/* Sección 3 — Artículos más comprados */}
+          <div className="card">
+            <div className="card-h"><h3>Artículos Más Comprados</h3></div>
+            <div className="card-b">
+              {topBuy.length === 0 ? <div className="empty"><p>Sin datos de compras</p></div> :
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--tx2)" }}>Por Monto</div>
+                    <div className="bar-c">{topBuy.slice(0, 10).map((p, i) => (
+                      <div className="bar-r" key={i}><div className="bar-l" title={p.name}>{p.name}</div><div className="bar-t"><div className="bar-f gn" style={{ width: Math.max(8, (p.total / maxB) * 100) + "%" }}></div></div><div className="bar-v">{money(p.total)}</div></div>
+                    ))}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color: "var(--tx2)" }}>Detalle</div>
+                    <table><thead><tr><th>Artículo</th><th>Cant.</th><th>Facturas</th><th>Monto</th></tr></thead>
+                      <tbody>{topBuy.slice(0, 10).map((p, i) => (
+                        <tr key={i}><td style={{ fontWeight: 500 }}>{p.name}</td><td>{p.qty}</td><td>{p.count}</td><td style={{ fontWeight: 600 }}>{money(p.total)}</td></tr>
+                      ))}</tbody></table>
+                  </div>
+                </div>}
+            </div>
           </div>
         </div>
       )}
